@@ -1,0 +1,36 @@
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": "7a97a1b6-547e-4718-bc72-5b84aca91b09",
+      "listing_id": 142,
+      "product_id": "8b97a1b6-547e-4718-bc72-5b84aca91b10",
+      "backmarket_id": 141,
+      "sku": "CELLEXA-IP15-128-BLK",
+      "title": "Apple iPhone 15 128GB Black",
+      "comment": "Mock Back Market listing for local development.",
+      "currency": "EUR",
+      "price": "699.99",
+      "min_price": "650.00",
+      "max_price": "750.00",
+      "quantity": 10,
+      "publication_state": 2,
+      "state": 10,
+      "grade": "Excellent",
+      "warranty_delay": 12,
+      "new_battery": false,
+      "outlet": false,
+      "shippings": [
+        {
+          "country_code": "fr-fr",
+          "shipper": "UPS",
+          "shipper_display": "UPS",
+          "shipping_delay": 48,
+          "shipping_price": "0.00"
+        }
+      ]
+    }
+  ]
+}

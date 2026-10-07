@@ -1,0 +1,4 @@
+<?php
+namespace Database\Seeders;
+use App\Models\Plan;use Illuminate\Database\Seeder;
+class PlanSeeder extends Seeder{public function run():void{foreach([['name'=>'Starter','slug'=>'starter','description'=>'Core order and inventory tools for one marketplace.','price'=>29,'features'=>['1 marketplace connection','Order and inventory synchronization','Core exports and documents']],['name'=>'Growth','slug'=>'growth','description'=>'Advanced operations for growing marketplace teams.','price'=>79,'features'=>['Multiple marketplace connections','Advanced order and inventory tools','Priority support']],['name'=>'Enterprise','slug'=>'enterprise','description'=>'Flexible workflows and dedicated support.','price'=>199,'features'=>['Custom marketplace scope','Team configuration','Dedicated onboarding']]]as$plan)Plan::updateOrCreate(['slug'=>$plan['slug']],[...$plan,'currency'=>'EUR','billing_interval'=>'month','is_active'=>true]);}}

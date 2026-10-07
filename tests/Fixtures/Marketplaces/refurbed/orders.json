@@ -1,0 +1,92 @@
+{
+  "orders": [
+    {
+      "id": "test-order-1001",
+      "released_at": "2026-09-23T10:00:00Z",
+      "state": "NEW",
+      "labels": [
+        "MISSING_PARCEL_TRACKING_URLS",
+        "MISSING_ITEM_IDENTIFIERS"
+      ],
+      "customer_email": "customer@example.com",
+      "shipping_address": {
+        "first_name": "Test",
+        "family_name": "Customer",
+        "entity": "PERSON",
+        "country_code": "DE",
+        "post_code": "10115",
+        "town": "Berlin",
+        "street_name": "Test Street",
+        "house_no": "10",
+        "phone_number": "+490000000000"
+      },
+      "invoice_address": {
+        "first_name": "Test",
+        "family_name": "Customer",
+        "entity": "PERSON",
+        "country_code": "DE",
+        "post_code": "10115",
+        "town": "Berlin",
+        "street_name": "Test Street",
+        "house_no": "10",
+        "phone_number": "+490000000000"
+      },
+      "currency_code": "EUR",
+      "settlement_currency_code": "EUR",
+      "settlement_exchange_rate": "1.000000",
+      "total_charged": "359.99",
+      "settlement_total_charged": "359.99",
+      "total_paid": "359.99",
+      "settlement_total_paid": "359.99",
+      "total_refunded": "0.00",
+      "settlement_total_refunded": "0.00",
+      "is_invoiceable": false,
+      "has_invoice": false,
+      "items": [
+        {
+          "id": "test-item-1001",
+          "name": "Test Smartphone | 64 GB",
+          "state": "NEW",
+          "sku": "TEST-SKU-001",
+          "currency_code": "EUR",
+          "settlement_currency_code": "EUR",
+          "total_charged": "359.99",
+          "settlement_total_charged": "359.99",
+          "total_paid": "359.99",
+          "settlement_total_paid": "359.99",
+          "total_refunded": "0.00",
+          "settlement_total_refunded": "0.00",
+          "settlement_total_commission": "30.60",
+          "taxation": "GROSS",
+          "offer_data": {
+            "offer_id": "test-offer-1001",
+            "offer_version": "1",
+            "offer_order_exchange_rate": "1.000000",
+            "offer_warranty": "M12",
+            "offer_grading": "A",
+            "shipping_profile_id": "test-profile",
+            "shipping_profile_version": "1",
+            "shipping_costs": "0.00"
+          },
+          "parcel_tracking_url": "",
+          "refund_eligibility": "INELIGIBLE_PERIOD_EXPIRED",
+          "return_initiated": false,
+          "vat_rate": "0.00",
+          "vat_country": "DE",
+          "weight_kg": 0.188,
+          "hs_code": "8517.1300",
+          "item_identifiers": [],
+          "order_id": "test-order-1001"
+        }
+      ],
+      "is_refundable": false,
+      "refund_eligibility": "INELIGIBLE_PERIOD_EXPIRED",
+      "total_discount": "0.00",
+      "settlement_total_discount": "0.00",
+      "total_vat_charged": "0.00",
+      "settlement_total_vat_charged": "0.00",
+      "payment_method": "STRIPE_CARDS"
+    }
+  ],
+  "has_more": false
+}

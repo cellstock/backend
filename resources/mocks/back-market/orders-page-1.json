@@ -1,0 +1,79 @@
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "order_id": 5978,
+      "delivery_mode": "HOME_DELIVERY",
+      "date_creation": "2026-09-23T09:35:24Z",
+      "date_modification": "2026-09-23T10:15:00Z",
+      "date_payment": "2026-09-23T09:36:10Z",
+      "date_shipping": null,
+      "state": 1,
+      "price": "699.99",
+      "shipping_price": "0.00",
+      "currency": "EUR",
+      "country_code": "fr-fr",
+      "tracking_number": null,
+      "tracking_url": null,
+      "shipper_display": null,
+      "is_backship": false,
+      "installment_payment": false,
+      "payment_method": "CARD",
+      "sales_taxes": "116.67",
+      "shipping_address": {
+        "id": 101,
+        "country": "FR",
+        "city": "Paris",
+        "postalCode": "75003",
+        "firstName": "Test",
+        "lastName": "Customer",
+        "company": null,
+        "phoneNumber": "+33600000000",
+        "state": null,
+        "street": "10 Test Street",
+        "street2": null
+      },
+      "billing_address": {
+        "id": 102,
+        "country": "FR",
+        "city": "Paris",
+        "postalCode": "75003",
+        "firstName": "Test",
+        "lastName": "Customer",
+        "company": null,
+        "phoneNumber": "+33600000000",
+        "state": null,
+        "street": "10 Test Street",
+        "street2": null
+      },
+      "orderlines": [
+        {
+          "id": 37195,
+          "date_creation": "2026-09-23T09:35:24Z",
+          "state": 1,
+          "price": "699.99",
+          "shipping_price": "0.00",
+          "shipping_delay": 48,
+          "currency": "EUR",
+          "return_reason": null,
+          "return_message": "",
+          "listing": "CELLEXA-IP15-128-BLK",
+          "listing_id": 142,
+          "orderline_fee": "69.99",
+          "product": "Apple iPhone 15 128GB Black",
+          "quantity": 1,
+          "brand": "Apple",
+          "product_id": 141,
+          "backcare": false,
+          "backcare_price": 0,
+          "sales_taxes": "116.67",
+          "imei": null,
+          "serial_number": "",
+          "condition": 10
+        }
+      ]
+    }
+  ]
+}
