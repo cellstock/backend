@@ -153,7 +153,8 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return ApiResponse::error(
                 message: $exception->getMessage(),
-                status: $exception->httpStatus(),
+                // Upstream credentials do not determine the CelleXa session.
+                status: $exception->httpStatus() === 401 ? 422 : $exception->httpStatus(),
                 errors: [
                     'refurbed_code' => $exception->grpcCode(),
                     'details' => $exception->details(),

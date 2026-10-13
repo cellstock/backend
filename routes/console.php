@@ -9,9 +9,9 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('marketplaces:sync-enabled')
-    ->everyFifteenMinutes()
+    ->everyTwoMinutes()
     ->withoutOverlapping();
 
 Schedule::command('refurbed:sync-reference-data')
-    ->everyTenMinutes()
+    ->everyFiveMinutes()
     ->withoutOverlapping();
