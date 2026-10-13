@@ -40,7 +40,11 @@ class SyncMarketplace implements ShouldQueue
             ->with([
                 'connection.marketplace',
             ])
-            ->findOrFail($this->syncRunId);
+            ->find($this->syncRunId);
+
+        if (! $syncRun) {
+            return; // The connection and its local records may have been deleted.
+        }
 
         if (
             $syncRun->status

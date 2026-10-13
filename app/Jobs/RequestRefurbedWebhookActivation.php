@@ -35,7 +35,11 @@ class RequestRefurbedWebhookActivation implements ShouldBeUnique, ShouldQueue
     {
         $connection = MarketplaceConnection::query()
             ->with('marketplace')
-            ->findOrFail($this->connectionId);
+            ->find($this->connectionId);
+
+        if (! $connection) {
+            return; // The connection and its local records may have been deleted.
+        }
 
         if (
             $connection->marketplace?->slug !== 'refurbed'

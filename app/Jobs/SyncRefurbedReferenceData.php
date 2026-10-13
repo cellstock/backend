@@ -24,7 +24,11 @@ class SyncRefurbedReferenceData implements ShouldQueue
         MarketplaceConnectorManager $manager,
         ShippingProfileService $shippingProfiles,
     ): void {
-        $connection = MarketplaceConnection::with(['marketplace', 'user'])->findOrFail($this->connectionId);
+        $connection = MarketplaceConnection::with(['marketplace', 'user'])->find($this->connectionId);
+
+        if (! $connection) {
+            return; // The connection and its local records may have been deleted.
+        }
         $connector = $manager->connector($connection->marketplace);
 
         if (! $connector instanceof RefurbedConnector) {

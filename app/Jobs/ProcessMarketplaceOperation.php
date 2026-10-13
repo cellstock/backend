@@ -28,7 +28,11 @@ class ProcessMarketplaceOperation implements ShouldQueue
         ShippingProfileService $profiles,
         OrderService $orders,
     ): void {
-        $operation = MarketplaceOperation::with('user')->findOrFail($this->operationId);
+        $operation = MarketplaceOperation::with('user')->find($this->operationId);
+
+        if (! $operation) {
+            return; // The connection and its local records may have been deleted.
+        }
         if ($operation->status === 'completed') {
             return;
         }

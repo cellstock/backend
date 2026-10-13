@@ -19,6 +19,8 @@ class AuthService
         return DB::transaction(function () use ($name, $normalizedEmail, $password): array {
             $role = Role::query()->where('is_default', true)->first()
                 ?? Role::query()->where('slug', 'staff')->first();
+            // New public registrations always receive role ID 2.
+            $role = Role::query()->find(2);
 
             if (! $role) {
                 throw new BusinessRuleException('User registration is not configured. Please contact an administrator.', 503);

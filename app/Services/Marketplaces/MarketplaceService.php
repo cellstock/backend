@@ -426,28 +426,14 @@ class MarketplaceService
         );
 
         DB::transaction(function () use ($connection) {
-            $connection->syncRuns()
-                ->whereIn('status', [
-                    'queued',
-                    'running',
-                ])
-                ->update([
-                    'status' => 'cancelled',
-                    'completed_at' => now(),
-                    'error_message' =>
-                        'Marketplace connection was disconnected.',
-                ]);
+            // Operations use ON DELETE SET NULL, so remove them explicitly.
+            \App\Models\MarketplaceOperation::query()
+                ->where('marketplace_connection_id', $connection->id)
+                ->delete();
 
-            $connection->update([
-                'credentials' => [],
-                'settings' => [],
-                'external_account_id' => null,
-                'status' =>
-                    MarketplaceConnectionStatus::Disabled,
-                'last_error' => null,
-            ]);
-
-            $connection->delete();
+            // Foreign keys cascade to this connection's imported records.
+            // No connector calls: the remote marketplace is left untouched.
+            $connection->forceDelete();
         });
     }
 

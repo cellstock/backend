@@ -35,7 +35,11 @@ class ProcessRefurbedOrderNotification implements ShouldQueue
     ): void {
         $delivery = MarketplaceWebhookDelivery::query()
             ->with('connection.marketplace')
-            ->findOrFail($this->deliveryId);
+            ->find($this->deliveryId);
+
+        if (! $delivery) {
+            return; // The connection and its local records may have been deleted.
+        }
 
         if (in_array($delivery->status, ['completed', 'ignored'], true)) {
             return;
