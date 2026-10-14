@@ -17,6 +17,11 @@ class MerchantAddressController extends Controller
         return response()->json(['success' => true, 'data' => ['addresses' => $this->addresses->list($request->user())]]);
     }
 
+    public function sync(Request $request): JsonResponse
+    {
+        return response()->json(['success' => true, 'data' => ['addresses' => $this->addresses->fetchFromRefurbed($request->user())]]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         return response()->json([

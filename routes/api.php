@@ -142,6 +142,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
     Route::prefix('merchant-addresses')->middleware('role:super_admin,admin')->controller(MerchantAddressController::class)->group(function () {
         Route::get('/', 'index');
+        Route::post('/sync', 'sync')->middleware('throttle:6,1');
         Route::post('/', 'store');
         Route::patch('/{address}', 'update')->whereNumber('address');
         Route::delete('/{address}', 'destroy')->whereNumber('address');

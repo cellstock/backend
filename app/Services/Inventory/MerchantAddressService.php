@@ -11,6 +11,17 @@ use Illuminate\Support\Str;
 
 class MerchantAddressService
 {
+    public function fetchFromRefurbed(User $user): array
+    {
+        $connection = $this->connection($user);
+        $connector = app(\App\Services\Marketplaces\MarketplaceConnectorManager::class)->connector($connection->marketplace);
+        if (! $connector instanceof \App\Services\Marketplaces\Connectors\RefurbedConnector) {
+            throw new \App\Exceptions\BusinessRuleException('A Refurbed connection is required.', 422);
+        }
+        app(MerchantAddressImporter::class)->sync($connection, $connector);
+        return $this->list($user);
+    }
+
     public function list(User $user): array
     {
         $connection = $this->connection($user);

@@ -313,7 +313,7 @@ class OrderService
             return $order->invoice_url;
         }
 
-        throw new BusinessRuleException('The Refurbed invoice is being prepared.', 202);
+        return $this->cacheInvoiceUrl($user, $orderId);
     }
 
     public function cacheInvoiceUrl(User $user, int $orderId): string

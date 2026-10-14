@@ -12,11 +12,18 @@ use App\Services\Marketplaces\MarketplaceConnectorManager;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
-class SyncRefurbedReferenceData implements ShouldQueue
+class SyncRefurbedReferenceData implements ShouldQueue, \Illuminate\Contracts\Queue\ShouldBeUnique
 {
     use Queueable;
 
     public int $tries = 5;
+    public int $timeout = 900;
+    public int $uniqueFor = 960;
+
+    public function uniqueId(): string
+    {
+        return (string) $this->connectionId;
+    }
 
     public function __construct(public readonly int $connectionId) {}
 
@@ -35,24 +42,10 @@ class SyncRefurbedReferenceData implements ShouldQueue
             return;
         }
 
-        $this->syncAddresses($connection, $connector);
+        app(\App\Services\Inventory\MerchantAddressImporter::class)->sync($connection, $connector);
         $this->syncReturns($connection, $connector);
         $shippingProfiles->sync($connection->user);
         $connection->update(['last_synced_at' => now(), 'last_error' => null]);
-    }
-
-    private function syncAddresses(MarketplaceConnection $connection, RefurbedConnector $connector): void
-    {
-        foreach ($connector->listMerchantAddressesForConnection($connection) as $address) {
-            if (! is_array($address) || empty($address['id'])) {
-                continue;
-            }
-
-            MarketplaceMerchantAddress::updateOrCreate([
-                'marketplace_connection_id' => $connection->id,
-                'external_id' => (string) $address['id'],
-            ], $this->addressValues($address));
-        }
     }
 
     private function syncReturns(MarketplaceConnection $connection, RefurbedConnector $connector): void
@@ -90,28 +83,4 @@ class SyncRefurbedReferenceData implements ShouldQueue
         }
     }
 
-    private function addressValues(array $address): array
-    {
-        return [
-            'version' => $address['version'] ?? null,
-            'label' => $address['label'] ?? null,
-            'first_name' => $address['first_name'] ?? null,
-            'family_name' => $address['family_name'] ?? null,
-            'company_name' => $address['company_name'] ?? null,
-            'country_code' => $address['country_code'] ?? null,
-            'post_code' => $address['post_code'] ?? null,
-            'town' => $address['town'] ?? null,
-            'street_name' => $address['street_name'] ?? null,
-            'house_no' => $address['house_no'] ?? null,
-            'supplement' => $address['supplement'] ?? null,
-            'phone_number' => $address['phone_number'] ?? null,
-            'type' => $address['type'] ?? null,
-            'raw_payload' => $address,
-            'sync_status' => 'synced',
-            'sync_error' => null,
-            'pending_action' => null,
-            'retry_count' => 0,
-            'last_synced_at' => now(),
-        ];
-    }
 }

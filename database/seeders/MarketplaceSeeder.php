@@ -13,7 +13,7 @@ class MarketplaceSeeder extends Seeder
             [
                 'name' => 'Back Market',
                 'slug' => 'back-market',
-                'logo' => '/images/marketplaces/back-market.svg',
+                'logo' => '/images/marketplaces/back-market.png',
                 'description' => 'Manage Back Market orders and inventory.',
                 'capabilities' => [
                     'orders',
@@ -25,7 +25,7 @@ class MarketplaceSeeder extends Seeder
             [
                 'name' => 'Refurbed',
                 'slug' => 'refurbed',
-                'logo' => '/images/marketplaces/refurbed.svg',
+                'logo' => '/images/marketplaces/refurbed.png',
                 'description' => 'Manage Refurbed orders.',
                 'capabilities' => [
                     'orders',

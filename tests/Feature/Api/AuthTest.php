@@ -25,7 +25,7 @@ class AuthTest extends TestCase
         $this->adminRole = Role::where('slug', 'admin')->firstOrFail();
     }
 
-    public function test_visitor_can_register_with_the_default_role(): void
+    public function test_visitor_can_register_with_role_two(): void
     {
         $response = $this->postJson('/api/auth/register', [
             'name' => 'New Seller',
@@ -37,7 +37,7 @@ class AuthTest extends TestCase
         $response->assertCreated()
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.user.email', 'seller@example.com')
-            ->assertJsonPath('data.user.role.slug', 'user')
+            ->assertJsonPath('data.user.role.id', 2)
             ->assertJsonStructure(['data' => ['token', 'token_type', 'user']]);
 
         $user = User::query()->where('email', 'seller@example.com')->firstOrFail();

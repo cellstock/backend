@@ -137,17 +137,10 @@ class OrderController extends Controller
 
     public function invoice(Request $request, int $order): JsonResponse
     {
-        $marketplaceOrder = $this->orderService->findForUser($request->user(), $order);
-        if ($marketplaceOrder->custom_invoice_path || $marketplaceOrder->invoice_url) {
-            return response()->json(['success' => true, 'data' => ['url' => $this->orderService->invoiceUrl($request->user(), $order)]]);
-        }
-
-        $operation = MarketplaceOperation::where('user_id', $request->user()->id)
-            ->where('type', 'order.invoice_cache')->where('entity_id', (string) $order)
-            ->whereIn('status', ['pending', 'processing'])->latest()->first();
-        $operation ??= $this->operations->queue($request->user(), $marketplaceOrder->marketplace_connection_id, 'order.invoice_cache', 'order', $order);
-
-        return response()->json(['success' => true, 'message' => 'Invoice is being prepared.', 'data' => ['url' => null, 'operation_id' => $operation->id]], 202);
+        return response()->json([
+            'success' => true,
+            'data' => ['url' => $this->orderService->invoiceUrl($request->user(), $order)],
+        ]);
     }
 
     public function customInvoice(Request $request, int $order): BinaryFileResponse
