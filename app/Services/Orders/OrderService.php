@@ -437,9 +437,6 @@ class OrderService
         Storage::disk('local')->put($path, $contents);
         $order->update(['custom_invoice_path' => $path]);
 
-        if (($rawPayload['is_invoiceable'] ?? null) === false) {
-            return ['refurbed_uploaded' => false];
-        }
 
         try {
             $connector->uploadOrderInvoice($order, base64_encode($contents));
@@ -451,9 +448,10 @@ class OrderService
             $rawPayload['is_invoiceable'] = false;
             $order->update(['raw_payload' => $rawPayload]);
 
-            return ['refurbed_uploaded' => false];
+            throw new BusinessRuleException('The bill was saved in CelleXa, but Refurbed does not currently allow invoice uploads for this order.', 422);
         }
 
+        $rawPayload['is_invoiceable'] = true;
         $rawPayload['has_invoice'] = true;
         $order->update(['raw_payload' => $rawPayload]);
 

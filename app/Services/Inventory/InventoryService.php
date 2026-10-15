@@ -23,6 +23,7 @@ class InventoryService
     public function list(User $user, array $filters): array
     {
         [$connection] = $this->refurbed($user);
+        app(BackgroundRefresh::class)->request($connection, true);
         $markets = $this->offerMarkets($connection);
         $marketCode = strtoupper((string) ($filters['market'] ?? data_get($markets, '0.code', '')));
 
@@ -450,6 +451,10 @@ class InventoryService
         }
         fclose($handle);
 
+        if ($processed === 0) {
+            throw new BusinessRuleException('The inventory file contains no data rows.', 422);
+        }
+
         $knownSkus = MarketplaceOffer::query()
             ->where('marketplace_connection_id', $connection->id)
             ->whereJsonContains('market_codes', $marketCode)
@@ -476,7 +481,7 @@ class InventoryService
         return [
             'market_code' => $marketCode,
             'processed' => $processed,
-            'successful' => count($stocks) - count($remoteFailures),
+            'successful' => count($stocks),
             'failed' => count($failures),
             'failures' => $failures,
         ];
@@ -500,16 +505,20 @@ class InventoryService
                 if (! is_array($offer)) {
                     continue;
                 }
-                $stored = $this->persistOffer($connection, $offer);
+                $pending = MarketplaceOffer::where('marketplace_connection_id', $connection->id)
+                    ->where('external_offer_id', (string) ($offer['id'] ?? data_get($offer, 'identifier.id', '')))
+                    ->where('pending_upload', true)->first();
+                $stored = $pending ?? $this->persistOffer($connection, $offer);
                 $seen[] = $stored->external_offer_id;
                 $count++;
             }
             $cursor = $result['next_cursor'] ?: null;
-        } while ($result['has_more'] && $cursor !== null && $count < 10000);
+        } while ($result['has_more'] && $cursor !== null);
 
         if (! $result['has_more']) {
             MarketplaceOffer::query()
                 ->where('marketplace_connection_id', $connection->id)
+                ->where('pending_upload', false)
                 ->when($seen !== [], fn ($query) => $query->whereNotIn('external_offer_id', $seen))
                 ->when($seen === [], fn ($query) => $query)
                 ->delete();

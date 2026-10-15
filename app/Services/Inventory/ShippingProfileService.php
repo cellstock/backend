@@ -19,6 +19,7 @@ class ShippingProfileService
     public function list(User $user, array $filters = []): array
     {
         [$connection] = $this->refurbed($user);
+        app(BackgroundRefresh::class)->request($connection, false);
         $base = MarketplaceShippingProfile::where('marketplace_connection_id', $connection->id);
         $countries = (clone $base)
             ->whereNotNull('source_country_code')

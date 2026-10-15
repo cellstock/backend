@@ -13,5 +13,5 @@ Schedule::command('marketplaces:sync-enabled')
     ->withoutOverlapping();
 
 Schedule::command('refurbed:sync-reference-data')
-    ->everyFiveMinutes()
+    ->everyTwoMinutes()
     ->withoutOverlapping();

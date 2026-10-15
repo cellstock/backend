@@ -53,6 +53,7 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
         ]);
 
         try {
+            app(\App\Services\Inventory\CatalogUploadValidator::class)->validate($path);
             $reader->open($path);
 
             foreach ($reader->getSheetIterator() as $sheet) {

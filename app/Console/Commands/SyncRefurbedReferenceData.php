@@ -17,7 +17,10 @@ class SyncRefurbedReferenceData extends Command
             ->where('status', 'connected')
             ->whereHas('marketplace', fn ($query) => $query->where('slug', 'refurbed'))
             ->select('id')->lazyById(200)
-            ->each(fn (MarketplaceConnection $connection) => SyncJob::dispatch($connection->id));
+            ->each(function (MarketplaceConnection $connection): void {
+                app(\App\Services\Inventory\BackgroundRefresh::class)->request($connection);
+                app(\App\Services\Inventory\BackgroundRefresh::class)->request($connection, true);
+            });
 
         return self::SUCCESS;
     }

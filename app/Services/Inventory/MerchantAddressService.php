@@ -19,12 +19,13 @@ class MerchantAddressService
             throw new \App\Exceptions\BusinessRuleException('A Refurbed connection is required.', 422);
         }
         app(MerchantAddressImporter::class)->sync($connection, $connector);
-        return $this->list($user);
+        return $this->list($user, false);
     }
 
-    public function list(User $user): array
+    public function list(User $user, bool $refresh = true): array
     {
         $connection = $this->connection($user);
+        if ($refresh) app(BackgroundRefresh::class)->request($connection);
 
         return MarketplaceMerchantAddress::where('marketplace_connection_id', $connection->id)
             ->where(function ($query): void {

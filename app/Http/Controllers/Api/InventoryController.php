@@ -129,7 +129,7 @@ class InventoryController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Inventory file processed.',
+            'message' => 'Inventory file validated. Accepted stock updates are queued for synchronization.',
             'data' => $this->inventory->importStocks($request->user(), $data['file'], $data['market_code']),
         ]);
     }

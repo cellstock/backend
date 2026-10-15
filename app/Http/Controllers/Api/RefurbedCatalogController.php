@@ -214,6 +214,12 @@ class RefurbedCatalogController extends Controller
         string $originalName,
         string $storedPath
     ): RefurbedCatalogImport {
+        try {
+            app(\App\Services\Inventory\CatalogUploadValidator::class)->validate(Storage::disk('local')->path($storedPath));
+        } catch (\Throwable $exception) {
+            Storage::disk('local')->delete($storedPath);
+            throw $exception;
+        }
         $import = RefurbedCatalogImport::query()->create([
             'user_id' => $request->user()->id,
             'original_name' => $originalName,

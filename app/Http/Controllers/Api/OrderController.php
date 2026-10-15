@@ -159,14 +159,13 @@ class OrderController extends Controller
             'carrier' => ['required', 'string', Rule::in(['UNSPECIFIED', 'ups', 'dhl-express'])],
         ]);
 
-        $marketplaceOrder = $this->orderService->findForUser($request->user(), $order);
-        $operation = $this->operations->queue($request->user(), $marketplaceOrder->marketplace_connection_id, 'order.shipping_label', 'order', $order, $data);
+        $label = $this->orderService->createShippingLabel($request->user(), $order, $data);
 
         return response()->json([
             'success' => true,
-            'message' => 'Shipping label creation queued.',
-            'data' => ['operation_id' => $operation->id],
-        ], 202);
+            'message' => 'Shipping label created.',
+            'data' => ['shipping_label' => $label],
+        ]);
     }
 
     public function merchantAddresses(Request $request, int $order): JsonResponse
@@ -243,9 +242,8 @@ class OrderController extends Controller
         $data = $request->validate(['file' => ['required', 'file', 'mimes:pdf', 'max:2048']]);
         $contents = file_get_contents($data['file']->getRealPath());
         abort_if($contents === false, 422, 'The uploaded PDF could not be read.');
-        $marketplaceOrder = $this->orderService->saveInvoice($request->user(), $order, $contents);
-        $operation = $this->operations->queue($request->user(), $marketplaceOrder->marketplace_connection_id, 'order.invoice_upload', 'order', $order);
+        $result = $this->orderService->uploadInvoice($request->user(), $order, $contents);
 
-        return response()->json(['success' => true, 'message' => 'Bill saved in CelleXa and queued for Refurbed.', 'data' => ['operation_id' => $operation->id]], 202);
+        return response()->json(['success' => true, 'message' => 'Bill saved in CelleXa and uploaded to Refurbed.', 'data' => $result]);
     }
 }

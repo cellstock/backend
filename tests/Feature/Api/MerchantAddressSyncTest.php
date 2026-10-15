@@ -38,5 +38,13 @@ class MerchantAddressSyncTest extends TestCase
         $this->assertSame('update', $pending->fresh()->pending_action);
         Queue::assertNothingPushed();
         Http::assertSentCount(1);
+        $saved = MarketplaceMerchantAddress::where('marketplace_connection_id', $owners[0][1]->id)->where('external_id', 'remote-1')->firstOrFail();
+        $this->actingAs($owners[0][0])->getJson('/api/merchant-addresses')
+            ->assertOk()->assertJsonFragment(['id' => $saved->id, 'external_id' => 'remote-1', 'company_name' => 'My warehouse']);
+        Http::assertSentCount(1);
+        app(\App\Services\Inventory\MerchantAddressService::class)->list($owners[0][0]);
+        app(\App\Services\Inventory\MerchantAddressService::class)->list($owners[0][0]);
+        Queue::assertPushed(\App\Jobs\SyncRefurbedReferenceData::class, 1);
+        Queue::assertPushed(\App\Jobs\SyncRefurbedReferenceData::class, fn ($job) => $job->connectionId === $owners[0][1]->id);
     }
 }

@@ -33,7 +33,7 @@ class SyncRefurbedReferenceData implements ShouldQueue, \Illuminate\Contracts\Qu
     ): void {
         $connection = MarketplaceConnection::with(['marketplace', 'user'])->find($this->connectionId);
 
-        if (! $connection) {
+        if (! $connection || $connection->status->value !== 'connected') {
             return; // The connection and its local records may have been deleted.
         }
         $connector = $manager->connector($connection->marketplace);
