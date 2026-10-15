@@ -27,6 +27,24 @@ class RefurbedConnectorTest extends TestCase
         ]);
     }
 
+    public function test_it_fetches_merchant_addresses_with_an_empty_json_object(): void
+    {
+        Http::fake([
+            'sandbox.refurbed.test/*' => Http::response([
+                'merchant_addresses' => [['id' => 'address-1']],
+            ]),
+        ]);
+
+        $addresses = $this->connector()->listMerchantAddressesForConnection(
+            $this->connection(['api_key' => 'sandbox-secret-token-value'])
+        );
+
+        $this->assertSame('address-1', $addresses[0]['id']);
+        Http::assertSent(fn (Request $request): bool => str_ends_with(
+            $request->url(), '/refb.merchant.v1.MerchantService/ListMerchantAddresses'
+        ) && $request->body() === '{}' && $request->hasHeader('Content-Type', 'application/json'));
+    }
+
     public function test_it_creates_an_offer_with_required_taxation(): void
     {
         Http::fake([

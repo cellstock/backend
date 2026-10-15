@@ -8,6 +8,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class RefurbedCatalogImport extends Model
 {
+    protected $attributes = [
+        'total_rows' => 0,
+        'imported_rows' => 0,
+        'failed_rows' => 0,
+    ];
+
     protected $fillable = [
         'user_id',
         'original_name',
@@ -24,6 +30,9 @@ class RefurbedCatalogImport extends Model
     protected function casts(): array
     {
         return [
+            'total_rows' => 'integer',
+            'imported_rows' => 'integer',
+            'failed_rows' => 'integer',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
         ];

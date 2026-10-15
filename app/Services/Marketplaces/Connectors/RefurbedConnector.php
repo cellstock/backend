@@ -908,7 +908,11 @@ class RefurbedConnector implements MarketplaceConnector
 
     private function post(array $credentials, string $path, array $data): Response
     {
-        $response = $this->client($credentials)->post($path, $data);
+        // Empty protobuf messages must be JSON objects, not arrays.
+        $client = $this->client($credentials);
+        $response = $data === []
+            ? $client->withBody('{}', 'application/json')->post($path)
+            : $client->post($path, $data);
 
         if ($response->successful()) {
             return $response;
