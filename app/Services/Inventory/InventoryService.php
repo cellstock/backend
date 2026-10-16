@@ -245,7 +245,20 @@ class InventoryService
 
     public function findInstance(User $user, string $identifier, string $identifierType): array
     {
-        $this->refurbed($user);
+        [$connection, $connector] = $this->refurbed($user);
+        if ($identifierType === 'ean_or_sku') {
+            $identifier = trim($identifier);
+            $offer = MarketplaceOffer::where('marketplace_connection_id', $connection->id)->where('sku', $identifier)->first();
+            if ($offer) {
+                if (! $offer->instance_id) throw new BusinessRuleException('This SKU has no linked Refurbed product yet. Search by EAN instead.', 422);
+                return ['id' => $offer->instance_id, 'name' => $offer->instance_name ?: $offer->sku, 'gtin' => $offer->ean];
+            }
+            if (! preg_match('/^\d{8,14}$/', $identifier)) throw new BusinessRuleException('No matching SKU was found in your connected Refurbed inventory.', 404);
+            return $connector->getInstance($connection, $identifier, 'gtin');
+        }
+        if (in_array($identifierType, ['gtin', 'mpn'], true)) {
+            return $connector->getInstance($connection, $identifier, $identifierType);
+        }
         $item = RefurbedCatalogItem::query()
             ->when(
                 $identifierType === 'id',
@@ -280,17 +293,13 @@ class InventoryService
             throw new BusinessRuleException('This market is not enabled for offer management.', 422);
         }
 
-        $data['create_market_prices'] = [[
-            'market_code' => $marketCode,
-            'currency_code' => $market['currency_code'] ?? $data['reference_currency_code'],
-            'price' => (string) $data['reference_price'],
-            'min_price' => (string) ($data['reference_min_price'] ?? $data['reference_price']),
-        ]];
-        unset($data['listing_details'], $data['market_code']);
+        $prices = $this->listingMarketPrices($connection, $data);
+        $data['create_market_prices'] = $prices;
+        unset($data['listing_details'], $data['market_code'], $data['market_prices']);
         $offer = $connector->createOffer($connection, $data);
         $stored = $this->persistOffer($connection, $offer);
-        if ($stored->market_codes === []) {
-            $stored->market_codes = [$marketCode];
+        if (empty($stored->market_codes)) {
+            $stored->market_codes = array_column($prices, 'market_code');
         }
         if ($listingDetails !== null) {
             $stored->listing_details = $listingDetails;
@@ -298,6 +307,23 @@ class InventoryService
         $stored->save();
 
         return $offer;
+    }
+
+    public function listingMarketPrices(MarketplaceConnection $connection, array $data): array
+    {
+        $markets = collect($this->offerMarkets($connection))->keyBy('code');
+        $rows = $data['market_prices'] ?? [['market_code' => $data['market_code'], 'price' => $data['reference_price'], 'min_price' => $data['reference_min_price'] ?? $data['reference_price']]];
+        $prices = [];
+        foreach ($rows as $row) {
+            $code = strtoupper($row['market_code']);
+            $market = $markets->get($code);
+            if (! $market) throw new BusinessRuleException('Offer management is not enabled for market '.$code.'.', 422);
+            $price = $row['price'];
+            $minimum = $row['min_price'] ?? $price;
+            if ((float) $minimum > (float) $price) throw new BusinessRuleException('Minimum price cannot exceed top price for '.$code.'.', 422);
+            $prices[] = ['market_code' => $code, 'currency_code' => $market['currency_code'] ?? $data['reference_currency_code'], 'price' => (string) $price, 'min_price' => (string) $minimum];
+        }
+        return $prices;
     }
 
     public function getOffer(User $user, string $offerId): array
@@ -327,6 +353,10 @@ class InventoryService
             'tags' => $offer->tags ?? [],
             'buy_box' => (bool) ($this->payloadValue($offer, ['has_buy_box', 'buy_box', 'market_data.has_buy_box', 'market_data.buy_box']) ?? false),
             'listing_details' => $offer->listing_details ?? [],
+            'market_prices' => array_values(array_replace(
+                collect(array_merge($offer->raw_payload['calculated_market_prices'] ?? [], $offer->raw_payload['set_market_prices'] ?? []))->keyBy('market_code')->all(),
+                collect(json_decode($offer->listing_details['marketplace_prices'] ?? '[]', true) ?: [])->keyBy('market_code')->all()
+            )),
             'market_codes' => $offer->market_codes ?? [],
             'markets' => $this->offerMarkets($connection),
             'marketplace' => [
@@ -347,9 +377,15 @@ class InventoryService
             ->firstOrFail();
         $listingDetails = $data['listing_details'] ?? null;
         $marketCode = strtoupper((string) ($data['market_code'] ?? ''));
-        unset($data['listing_details'], $data['market_code']);
+        $marketPrices = $data['market_prices'] ?? null;
+        unset($data['listing_details'], $data['market_code'], $data['market_prices']);
 
-        if ($marketCode !== '') {
+        if ($marketPrices !== null) {
+            foreach ($marketPrices as $price) {
+                if (! in_array($price['market_code'], $stored->market_codes ?? [], true)) throw new BusinessRuleException('This offer is not available in the selected market.', 422);
+            }
+            $data['update_market_prices'] = $this->listingMarketPrices($connection, ['market_prices' => $marketPrices, 'reference_currency_code' => $stored->reference_currency_code]);
+        } elseif ($marketCode !== '') {
             $market = collect($this->offerMarkets($connection))->firstWhere('code', $marketCode);
             if (! $market || ! in_array($marketCode, $stored->market_codes ?? [], true)) {
                 throw new BusinessRuleException('This offer is not available in the selected market.', 422);
@@ -361,6 +397,24 @@ class InventoryService
                 'price' => (string) ($data['reference_price'] ?? $stored->reference_price),
                 'min_price' => (string) ($data['reference_min_price'] ?? $stored->reference_min_price ?? $stored->reference_price),
             ]];
+        }
+
+        $preferences = array_replace($stored->listing_details ?? [], $listingDetails ?? []);
+        $stopQuantity = false;
+        $stopPrices = false;
+        foreach ($stored->market_codes ?? [] as $code) {
+            $stopQuantity = $stopQuantity || ($preferences['dont_send_quantity_'.$code] ?? '0') === '1';
+            $stopPrices = $stopPrices || ($preferences['dont_send_price_'.$code] ?? '0') === '1';
+        }
+        if ($stopQuantity) unset($data['stock']);
+        if ($stopPrices) unset($data['reference_price'], $data['reference_min_price']);
+        if (isset($data['update_market_prices'])) {
+            $data['update_market_prices'] = array_values(array_filter($data['update_market_prices'], fn ($price) => ($preferences['dont_send_price_'.$price['market_code']] ?? '0') !== '1'));
+            foreach ($data['update_market_prices'] as &$price) {
+                if (($preferences['block_price_'.$price['market_code']] ?? '0') === '1') $price['min_price'] = $price['price'];
+            }
+            unset($price);
+            if ($data['update_market_prices'] === []) unset($data['update_market_prices']);
         }
 
         $remoteOffer = null;

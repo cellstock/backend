@@ -6,11 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Services\Inventory\InventoryService;
 use App\Models\MarketplaceConnection;
 use App\Models\MarketplaceOffer;
-use App\Models\RefurbedCatalogItem;
 use App\Services\Marketplaces\MarketplaceOperationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 class InventoryController extends Controller
 {
@@ -40,7 +38,7 @@ class InventoryController extends Controller
     {
         $data = $request->validate([
             'identifier' => ['required', 'string', 'max:255'],
-            'identifier_type' => ['required', 'in:gtin,id,mpn'],
+            'identifier_type' => ['required', 'in:gtin,id,mpn,ean_or_sku'],
         ]);
 
         return response()->json(['success' => true, 'data' => ['instance' => $this->inventory->findInstance($request->user(), $data['identifier'], $data['identifier_type'])]]);
@@ -75,41 +73,27 @@ class InventoryController extends Controller
             'reference_price' => ['required', 'decimal:0,2', 'min:0'],
             'reference_min_price' => ['sometimes', 'nullable', 'decimal:0,2', 'min:0'],
             'market_code' => ['required', 'string', 'max:10'],
+            'market_prices' => ['sometimes', 'array', 'min:1', 'max:100'],
+            'market_prices.*.market_code' => ['required', 'string', 'distinct', 'max:10'],
+            'market_prices.*.price' => ['required', 'decimal:0,2', 'min:0'],
+            'market_prices.*.min_price' => ['nullable', 'decimal:0,2', 'min:0'],
             'listing_details' => ['sometimes', 'array'],
             'listing_details.*' => ['nullable', 'string', 'max:2000'],
         ]);
 
         $connection = MarketplaceConnection::whereBelongsTo($request->user())
+            ->where('status', 'connected')
             ->whereHas('marketplace', fn ($query) => $query->where('slug', 'refurbed'))
             ->firstOrFail();
         $payload = array_filter($data, fn ($value) => $value !== null && $value !== '');
-        $temporaryId = 'pending-'.Str::uuid();
-        $catalogItem = isset($payload['instance_id'])
-            ? RefurbedCatalogItem::where('instance_id', $payload['instance_id'])->latest('catalog_import_id')->first()
-            : null;
-        MarketplaceOffer::create([
-            'marketplace_connection_id' => $connection->id,
-            'external_offer_id' => $temporaryId,
-            'instance_id' => $payload['instance_id'] ?? null,
-            'instance_name' => $catalogItem?->name,
-            'ean' => $payload['gtin'] ?? null,
-            'sku' => $payload['sku'],
-            'grading' => $payload['grading'],
-            'warranty' => $payload['warranty'],
-            'stock' => $payload['stock'],
-            'shipping_profile_id' => $payload['shipping_profile_id'],
-            'reference_currency_code' => $payload['reference_currency_code'],
-            'reference_price' => $payload['reference_price'],
-            'reference_min_price' => $payload['reference_min_price'] ?? null,
-            'market_codes' => [$payload['market_code']],
-            'raw_payload' => ['taxation' => $payload['taxation'], 'sync_status' => 'pending'],
-            'listing_details' => $payload['listing_details'] ?? [],
-            'pending_upload' => true,
-            'is_active' => true,
-        ]);
-        $operation = $this->operations->queue($request->user(), $connection->id, 'offer.create', 'offer', $temporaryId, $payload);
+        $prices = $this->inventory->listingMarketPrices($connection, $payload);
+        if (! \App\Models\MarketplaceShippingProfile::where('marketplace_connection_id', $connection->id)->where('external_id', $payload['shipping_profile_id'])->exists()) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['shipping_profile_id' => 'Select a shipping profile belonging to this connection.']);
+        }
+        $payload['listing_details']['marketplace_prices'] = json_encode($prices);
+        $offer = $this->inventory->create($request->user(), $payload);
 
-        return response()->json(['success' => true, 'message' => 'Offer queued for Refurbed synchronization.', 'data' => ['operation_id' => $operation->id]], 202);
+        return response()->json(['success' => true, 'message' => 'Offer created in Refurbed and saved in CelleXa.', 'data' => ['offer' => $offer]], 201);
     }
 
     public function show(Request $request, string $offerId): JsonResponse
@@ -161,6 +145,10 @@ class InventoryController extends Controller
             'shipping_profile_id' => ['sometimes', 'string'],
             'listing_details' => ['sometimes', 'array'],
             'listing_details.*' => ['nullable', 'string', 'max:2000'],
+            'market_prices' => ['sometimes', 'array', 'min:1', 'max:100'],
+            'market_prices.*.market_code' => ['required', 'string', 'distinct', 'max:10'],
+            'market_prices.*.price' => ['required', 'decimal:0,2', 'min:0'],
+            'market_prices.*.min_price' => ['nullable', 'decimal:0,2', 'min:0'],
             'market_code' => ['sometimes', 'string', 'max:10'],
         ]);
 
@@ -170,6 +158,20 @@ class InventoryController extends Controller
 
         $offer = MarketplaceOffer::whereHas('connection', fn ($query) => $query->whereBelongsTo($request->user()))
             ->where('external_offer_id', $offerId)->firstOrFail();
+        if (isset($data['market_prices'])) {
+            $prices = $this->inventory->listingMarketPrices($offer->connection, $data + ['reference_currency_code' => $offer->reference_currency_code]);
+            foreach ($prices as $price) {
+                if (! in_array($price['market_code'], $offer->market_codes ?? [], true)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['market_prices' => 'Only existing offer markets can be edited.']);
+                }
+            }
+            $data['listing_details'] = array_replace($offer->listing_details ?? [], $data['listing_details'] ?? [], ['marketplace_prices' => json_encode(array_values(array_replace(collect(json_decode($offer->listing_details['marketplace_prices'] ?? '[]', true) ?: [])->keyBy('market_code')->all(), collect($prices)->keyBy('market_code')->all())))]);
+        } elseif (isset($data['listing_details'])) {
+            $data['listing_details'] = array_replace($offer->listing_details ?? [], $data['listing_details']);
+        }
+        if (isset($data['shipping_profile_id']) && ! \App\Models\MarketplaceShippingProfile::where('marketplace_connection_id', $offer->marketplace_connection_id)->where('external_id', $data['shipping_profile_id'])->exists()) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['shipping_profile_id' => 'Select a shipping profile belonging to this connection.']);
+        }
         $localFields = array_intersect_key($data, array_flip([
             'stock', 'reference_price', 'reference_min_price', 'grading',
             'shipping_profile_id', 'listing_details',
