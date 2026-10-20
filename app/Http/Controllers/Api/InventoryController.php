@@ -162,17 +162,23 @@ class InventoryController extends Controller
             'stock' => ['sometimes', 'integer', 'min:0'],
             'reference_price' => ['sometimes', 'decimal:0,2', 'min:0'],
             'reference_min_price' => ['sometimes', 'nullable', 'decimal:0,2', 'min:0'],
-            'grading' => ['sometimes', 'in:A,B,C,AA'],
-            'taxation' => ['sometimes', 'in:GROSS,MARGINAL'],
-            'shipping_profile_id' => ['sometimes', 'string'],
+            'grading' => ['sometimes', 'nullable', 'in:A,B,C,AA'],
+            'taxation' => ['sometimes', 'nullable', 'in:GROSS,MARGINAL'],
+            'shipping_profile_id' => ['sometimes', 'nullable', 'string', 'max:255'],
             'listing_details' => ['sometimes', 'array'],
-            'listing_details.*' => ['nullable', 'string', 'max:2000'],
-            'market_prices' => ['sometimes', 'array', 'min:1', 'max:100'],
+            // marketplace_prices JSON and long GPSR text can exceed 2000 chars
+            'listing_details.*' => ['nullable', 'string', 'max:20000'],
+            'market_prices' => ['sometimes', 'array', 'max:100'],
             'market_prices.*.market_code' => ['required', 'string', 'distinct', 'max:10'],
             'market_prices.*.price' => ['required', 'decimal:0,2', 'min:0'],
             'market_prices.*.min_price' => ['nullable', 'decimal:0,2', 'min:0'],
-            'market_code' => ['sometimes', 'string', 'max:10'],
+            'market_code' => ['sometimes', 'nullable', 'string', 'max:10'],
         ]);
+
+        $data = array_filter(
+            $data,
+            static fn ($value) => $value !== null && $value !== '',
+        );
 
         if ($data === []) {
             return response()->json(['success' => false, 'message' => 'Provide at least one offer field to update.'], 422);
@@ -180,7 +186,14 @@ class InventoryController extends Controller
 
         $offer = MarketplaceOffer::whereHas('connection', fn ($query) => $query->whereBelongsTo($request->user()))
             ->where('external_offer_id', $offerId)->firstOrFail();
-        if (isset($data['market_prices'])) {
+
+        if (isset($data['listing_details']) && is_array($data['listing_details'])) {
+            $data['listing_details'] = collect($data['listing_details'])
+                ->map(fn ($value) => $value === null ? null : (string) $value)
+                ->all();
+        }
+
+        if (! empty($data['market_prices'])) {
             $prices = $this->inventory->listingMarketPrices($offer->connection, $data + ['reference_currency_code' => $offer->reference_currency_code]);
             foreach ($prices as $price) {
                 if (! in_array($price['market_code'], $offer->market_codes ?? [], true)) {
@@ -191,7 +204,7 @@ class InventoryController extends Controller
         } elseif (isset($data['listing_details'])) {
             $data['listing_details'] = array_replace($offer->listing_details ?? [], $data['listing_details']);
         }
-        if (isset($data['shipping_profile_id']) && ! \App\Models\MarketplaceShippingProfile::where('marketplace_connection_id', $offer->marketplace_connection_id)->where('external_id', $data['shipping_profile_id'])->exists()) {
+        if (! empty($data['shipping_profile_id']) && ! \App\Models\MarketplaceShippingProfile::where('marketplace_connection_id', $offer->marketplace_connection_id)->where('external_id', $data['shipping_profile_id'])->exists()) {
             throw \Illuminate\Validation\ValidationException::withMessages(['shipping_profile_id' => 'Select a shipping profile belonging to this connection.']);
         }
         $localFields = array_intersect_key($data, array_flip([
