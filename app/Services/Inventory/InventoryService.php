@@ -548,14 +548,29 @@ class InventoryService
         $marketPrices = $data['market_prices'] ?? null;
         unset($data['listing_details'], $data['market_code'], $data['market_prices']);
 
-        if ($marketPrices !== null) {
+        $offerMarketCodes = collect($stored->market_codes ?? [])
+            ->map(fn ($code) => strtoupper((string) $code))
+            ->filter()
+            ->values()
+            ->all();
+        if ($offerMarketCodes === []) {
+            $offerMarketCodes = collect($this->offerMarkets($connection))->pluck('code')->map(fn ($code) => strtoupper((string) $code))->all();
+        }
+
+        if (is_array($marketPrices) && $marketPrices !== []) {
             foreach ($marketPrices as $price) {
-                if (! in_array($price['market_code'], $stored->market_codes ?? [], true)) throw new BusinessRuleException('This offer is not available in the selected market.', 422);
+                $code = strtoupper((string) ($price['market_code'] ?? ''));
+                if ($offerMarketCodes !== [] && ! in_array($code, $offerMarketCodes, true)) {
+                    throw new BusinessRuleException('This offer is not available in the selected market.', 422);
+                }
             }
-            $data['update_market_prices'] = $this->listingMarketPrices($connection, ['market_prices' => $marketPrices, 'reference_currency_code' => $stored->reference_currency_code]);
+            $data['update_market_prices'] = $this->listingMarketPrices($connection, [
+                'market_prices' => $marketPrices,
+                'reference_currency_code' => $stored->reference_currency_code,
+            ]);
         } elseif ($marketCode !== '') {
             $market = collect($this->offerMarkets($connection))->firstWhere('code', $marketCode);
-            if (! $market || ! in_array($marketCode, $stored->market_codes ?? [], true)) {
+            if (! $market || ($offerMarketCodes !== [] && ! in_array($marketCode, $offerMarketCodes, true))) {
                 throw new BusinessRuleException('This offer is not available in the selected market.', 422);
             }
 
@@ -565,25 +580,62 @@ class InventoryService
                 'price' => (string) ($data['reference_price'] ?? $stored->reference_price),
                 'min_price' => (string) ($data['reference_min_price'] ?? $stored->reference_min_price ?? $stored->reference_price),
             ]];
+        } elseif (isset($data['reference_price']) || isset($data['reference_min_price'])) {
+            // Panel top/bottom price changes must push per-market prices to Refurbed.
+            $price = (string) ($data['reference_price'] ?? $stored->reference_price);
+            $minimum = (string) ($data['reference_min_price'] ?? $stored->reference_min_price ?? $price);
+            $markets = collect($this->offerMarkets($connection))->keyBy('code');
+            $data['update_market_prices'] = collect($offerMarketCodes !== [] ? $offerMarketCodes : $markets->keys())
+                ->map(function (string $code) use ($markets, $price, $minimum, $stored): array {
+                    $market = $markets->get($code);
+
+                    return [
+                        'market_code' => $code,
+                        'currency_code' => $market['currency_code'] ?? $stored->reference_currency_code,
+                        'price' => $price,
+                        'min_price' => $minimum,
+                    ];
+                })
+                ->values()
+                ->all();
         }
 
         $preferences = array_replace($stored->listing_details ?? [], $listingDetails ?? []);
         $stopQuantity = false;
-        $stopPrices = false;
-        foreach ($stored->market_codes ?? [] as $code) {
+        foreach ($offerMarketCodes as $code) {
             $stopQuantity = $stopQuantity || ($preferences['dont_send_quantity_'.$code] ?? '0') === '1';
-            $stopPrices = $stopPrices || ($preferences['dont_send_price_'.$code] ?? '0') === '1';
         }
-        if ($stopQuantity) unset($data['stock']);
-        if ($stopPrices) unset($data['reference_price'], $data['reference_min_price']);
+        if ($stopQuantity) {
+            unset($data['stock']);
+        }
         if (isset($data['update_market_prices'])) {
-            $data['update_market_prices'] = array_values(array_filter($data['update_market_prices'], fn ($price) => ($preferences['dont_send_price_'.$price['market_code']] ?? '0') !== '1'));
+            $data['update_market_prices'] = array_values(array_filter(
+                $data['update_market_prices'],
+                fn ($price) => ($preferences['dont_send_price_'.$price['market_code']] ?? '0') !== '1'
+            ));
             foreach ($data['update_market_prices'] as &$price) {
-                if (($preferences['block_price_'.$price['market_code']] ?? '0') === '1') $price['min_price'] = $price['price'];
+                if (($preferences['block_price_'.$price['market_code']] ?? '0') === '1') {
+                    $price['min_price'] = $price['price'];
+                }
             }
             unset($price);
-            if ($data['update_market_prices'] === []) unset($data['update_market_prices']);
+            if ($data['update_market_prices'] === []) {
+                unset($data['update_market_prices']);
+            }
         }
+        // Keep reference_price when any market still accepts price updates.
+        if (! isset($data['update_market_prices']) && collect($offerMarketCodes)->every(
+            fn (string $code) => ($preferences['dont_send_price_'.$code] ?? '0') === '1'
+        )) {
+            unset($data['reference_price'], $data['reference_min_price']);
+        }
+
+        // Refurbed UpdateOffer only accepts a known field set.
+        $data = array_intersect_key($data, array_flip([
+            'grading', 'warranty', 'stock', 'shipping_profile_id', 'secondary_shipping_profile_id',
+            'taxation', 'reference_currency_code', 'reference_price', 'reference_min_price',
+            'update_market_prices', 'battery_condition',
+        ]));
 
         $remoteOffer = null;
         if ($data !== []) {
@@ -591,7 +643,12 @@ class InventoryService
             $stored = $this->persistOffer($connection, $remoteOffer);
         }
         if ($listingDetails !== null) {
-            $stored->forceFill(['listing_details' => $listingDetails])->save();
+            $stored->forceFill([
+                'listing_details' => $listingDetails,
+                'pending_upload' => false,
+            ])->save();
+        } else {
+            $stored->forceFill(['pending_upload' => false])->save();
         }
 
         return $remoteOffer ?? ['id' => $stored->external_offer_id];
@@ -829,8 +886,12 @@ class InventoryService
             'stock' => max(0, (int) ($offer['stock'] ?? 0)),
             'shipping_profile_id' => $offer['shipping_profile_id'] ?? null,
             'reference_currency_code' => $offer['reference_currency_code'] ?? data_get($offer, 'reference_price.currency_code'),
-            'reference_price' => (string) ($offer['reference_price'] ?? data_get($offer, 'reference_price.amount', 0)),
-            'reference_min_price' => $offer['reference_min_price'] ?? data_get($offer, 'reference_min_price.amount'),
+            'reference_price' => is_array($offer['reference_price'] ?? null)
+                ? (string) data_get($offer, 'reference_price.amount', 0)
+                : (string) ($offer['reference_price'] ?? data_get($offer, 'reference_price.amount', 0)),
+            'reference_min_price' => is_array($offer['reference_min_price'] ?? null)
+                ? data_get($offer, 'reference_min_price.amount')
+                : ($offer['reference_min_price'] ?? data_get($offer, 'reference_min_price.amount')),
             'raw_payload' => $offer,
             'marketplace_created_at' => $offer['created_at'] ?? null,
             'last_synced_at' => now(),

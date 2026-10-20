@@ -193,10 +193,15 @@ class InventoryController extends Controller
                 ->all();
         }
 
+        $offerMarketCodes = collect($offer->market_codes ?? [])
+            ->map(fn ($code) => strtoupper((string) $code))
+            ->filter()
+            ->all();
+
         if (! empty($data['market_prices'])) {
             $prices = $this->inventory->listingMarketPrices($offer->connection, $data + ['reference_currency_code' => $offer->reference_currency_code]);
             foreach ($prices as $price) {
-                if (! in_array($price['market_code'], $offer->market_codes ?? [], true)) {
+                if ($offerMarketCodes !== [] && ! in_array($price['market_code'], $offerMarketCodes, true)) {
                     throw \Illuminate\Validation\ValidationException::withMessages(['market_prices' => 'Only existing offer markets can be edited.']);
                 }
             }
@@ -207,25 +212,19 @@ class InventoryController extends Controller
         if (! empty($data['shipping_profile_id']) && ! \App\Models\MarketplaceShippingProfile::where('marketplace_connection_id', $offer->marketplace_connection_id)->where('external_id', $data['shipping_profile_id'])->exists()) {
             throw \Illuminate\Validation\ValidationException::withMessages(['shipping_profile_id' => 'Select a shipping profile belonging to this connection.']);
         }
-        $localFields = array_intersect_key($data, array_flip([
-            'stock', 'reference_price', 'reference_min_price', 'grading',
-            'shipping_profile_id', 'listing_details',
-        ]));
-        if (isset($data['taxation'])) {
-            $localFields['raw_payload'] = array_replace($offer->raw_payload ?? [], [
-                'taxation' => $data['taxation'],
-                'sync_status' => 'pending',
-            ]);
-        }
-        $localFields['pending_upload'] = true;
-        $offer->update($localFields);
-        $operation = $this->operations->queue($request->user(), $offer->marketplace_connection_id, 'offer.update', 'offer', $offerId, $data);
+
+        // Push to Refurbed immediately (same as create). Queued updates were often
+        // never processed when no queue worker was listening on "marketplaces".
+        $updated = $this->inventory->update($request->user(), $offerId, $data);
 
         return response()->json([
             'success' => true,
-            'message' => 'Offer update queued for Refurbed synchronization.',
-            'data' => ['operation_id' => $operation->id],
-        ], 202);
+            'message' => 'Offer updated in Refurbed and saved in CelleXa.',
+            'data' => [
+                'offer' => $updated,
+                'operation_id' => null,
+            ],
+        ]);
     }
 
     public function destroy(Request $request, string $offerId): JsonResponse

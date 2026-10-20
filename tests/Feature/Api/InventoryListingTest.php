@@ -63,14 +63,12 @@ class InventoryListingTest extends TestCase
         $this->postJson('/api/inventory/offers', $payload)->assertStatus(422);
         $this->assertSame(0, \App\Models\MarketplaceOperation::count());
         $edit = ['stock' => 4, 'listing_details' => ['title' => 'Updated title'], 'market_prices' => [['market_code' => 'CH', 'price' => '230.00', 'min_price' => '200.00']]];
-        $this->patchJson('/api/inventory/offers/remote-1', $edit)->assertStatus(202);
+        Http::fake(['*/UpdateOffer' => Http::response(['offer' => ['id' => 'remote-1', 'sku' => 'TEST-1', 'stock' => 4, 'reference_price' => '200.00', 'set_market_prices' => [['market_code' => 'CH', 'price' => '230.00']]]])]);
+        $this->patchJson('/api/inventory/offers/remote-1', $edit)->assertOk();
         $saved->refresh();
         $this->assertSame('Updated title', $saved->listing_details['title']);
         $this->assertSame('Manufacturer', $saved->listing_details['gpsr_name']);
         $this->assertCount(2, json_decode($saved->listing_details['marketplace_prices'], true));
-        $operation = \App\Models\MarketplaceOperation::latest('id')->firstOrFail();
-        Http::fake(['*/UpdateOffer' => Http::response(['offer' => ['id' => 'remote-1', 'sku' => 'TEST-1', 'stock' => 4, 'reference_price' => '200.00']])]);
-        app(\App\Services\Inventory\InventoryService::class)->update($user, 'remote-1', $operation->payload);
         Http::assertSent(fn ($request) => str_ends_with($request->url(), '/UpdateOffer') && $request['update_market_prices'][0]['market_code'] === 'CH'
             && $request['update_market_prices'][0]['price'] === '230.00' && !isset($request['listing_details']) && !isset($request['market_prices']));
         $this->getJson('/api/inventory/offers/remote-1')->assertOk()->assertJsonPath('data.offer.listing_details.title', 'Updated title');
@@ -80,7 +78,8 @@ class InventoryListingTest extends TestCase
             'listing_details' => ['dont_send_quantity_AT' => '1', 'dont_send_price_CH' => '1', 'block_price_AT' => '1'],
         ]);
         Http::assertSent(fn ($request) => str_ends_with($request->url(), '/UpdateOffer')
-            && !isset($request['stock']) && !isset($request['reference_price'])
+            && !isset($request['stock'])
+            && ($request['reference_price'] ?? null) === '999.00'
             && count($request['update_market_prices'] ?? []) === 1
             && $request['update_market_prices'][0]['min_price'] === '250.00');
     }
