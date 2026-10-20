@@ -8,6 +8,7 @@ use App\Models\MarketplaceConnection;
 use App\Models\MarketplaceOffer;
 use App\Models\RefurbedCatalogItem;
 use App\Models\User;
+use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use App\Services\Marketplaces\MarketplaceOperationService;
@@ -22,7 +23,10 @@ class InventoryService
 
     public function list(User $user, array $filters): array
     {
-        [$connection] = $this->refurbed($user);
+        [$connection] = $this->inventoryConnection(
+            $user,
+            isset($filters['marketplace']) ? (string) $filters['marketplace'] : null
+        );
         app(BackgroundRefresh::class)->request($connection, true);
         $markets = $this->offerMarkets($connection);
         $marketCode = strtoupper((string) ($filters['market'] ?? data_get($markets, '0.code', '')));
@@ -246,25 +250,42 @@ class InventoryService
     public function findInstance(User $user, string $identifier, string $identifierType): array
     {
         [$connection, $connector] = $this->refurbed($user);
+        $identifier = trim($identifier);
+
         if ($identifierType === 'ean_or_sku') {
-            $identifier = trim($identifier);
             $offer = MarketplaceOffer::where('marketplace_connection_id', $connection->id)->where('sku', $identifier)->first();
             if ($offer) {
                 if (! $offer->instance_id) throw new BusinessRuleException('This SKU has no linked Refurbed product yet. Search by EAN instead.', 422);
-                return ['id' => $offer->instance_id, 'name' => $offer->instance_name ?: $offer->sku, 'gtin' => $offer->ean];
+                return ['id' => (string) $offer->instance_id, 'name' => $offer->instance_name ?: $offer->sku, 'gtin' => $offer->ean];
             }
             if (! preg_match('/^\d{8,14}$/', $identifier)) throw new BusinessRuleException('No matching SKU was found in your connected Refurbed inventory.', 404);
-            return $connector->getInstance($connection, $identifier, 'gtin');
+            return $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin'));
         }
+
         if (in_array($identifierType, ['gtin', 'mpn'], true)) {
-            return $connector->getInstance($connection, $identifier, $identifierType);
+            return $this->normalizeInstance($connector->getInstance($connection, $identifier, $identifierType));
         }
+
+        if ($identifierType === 'id') {
+            $remote = $this->normalizeInstance($connector->getInstance($connection, $identifier, 'id'));
+            $local = RefurbedCatalogItem::query()
+                ->where('instance_id', $identifier)
+                ->latest('catalog_import_id')
+                ->first();
+
+            return [
+                'id' => $remote['id'],
+                'name' => $remote['name'] ?: ($local?->name ?? $identifier),
+                'name_de' => $local?->name_de,
+                'attributes' => $local?->attributes,
+                'attributes_de' => $local?->attributes_de,
+                'category' => $local?->main_category,
+                'gtin' => $remote['gtin'] ?? null,
+            ];
+        }
+
         $item = RefurbedCatalogItem::query()
-            ->when(
-                $identifierType === 'id',
-                fn ($query) => $query->where('instance_id', $identifier),
-                fn ($query) => $query->where('name', 'like', "%{$identifier}%")
-            )
+            ->where('name', 'like', "%{$identifier}%")
             ->latest('catalog_import_id')
             ->first();
 
@@ -273,7 +294,7 @@ class InventoryService
         }
 
         return [
-            'id' => $item->instance_id,
+            'id' => (string) $item->instance_id,
             'name' => $item->name,
             'name_de' => $item->name_de,
             'attributes' => $item->attributes,
@@ -284,8 +305,16 @@ class InventoryService
 
     public function create(User $user, array $data): array
     {
-        [$connection, $connector] = $this->refurbed($user);
+        [$connection, $connector] = $this->inventoryConnection(
+            $user,
+            isset($data['marketplace']) ? (string) $data['marketplace'] : null
+        );
         $listingDetails = $data['listing_details'] ?? null;
+
+        if ($connector instanceof BackMarketConnector) {
+            return $this->createBackMarketListing($connection, $connector, $data, $listingDetails);
+        }
+
         $marketCode = strtoupper((string) ($data['market_code'] ?? ''));
         $market = collect($this->offerMarkets($connection))->firstWhere('code', $marketCode);
 
@@ -294,9 +323,7 @@ class InventoryService
         }
 
         $prices = $this->listingMarketPrices($connection, $data);
-        $data['create_market_prices'] = $prices;
-        unset($data['listing_details'], $data['market_code'], $data['market_prices']);
-        $offer = $connector->createOffer($connection, $data);
+        $offer = $connector->createOffer($connection, $this->createOfferPayload($data, $prices));
         $stored = $this->persistOffer($connection, $offer);
         if (empty($stored->market_codes)) {
             $stored->market_codes = array_column($prices, 'market_code');
@@ -307,6 +334,147 @@ class InventoryService
         $stored->save();
 
         return $offer;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @param  array<string, string>|null  $listingDetails
+     * @return array<string, mixed>
+     */
+    private function createBackMarketListing(
+        MarketplaceConnection $connection,
+        BackMarketConnector $connector,
+        array $data,
+        ?array $listingDetails
+    ): array {
+        $sku = trim((string) ($data['sku'] ?? ''));
+        if ($sku === '') {
+            throw new BusinessRuleException('SKU is required for Back Market listings.', 422);
+        }
+
+        $quantity = max(0, (int) ($data['stock'] ?? 0));
+        $price = (string) ($data['reference_price'] ?? '0');
+        $currency = strtoupper((string) ($data['reference_currency_code'] ?? 'EUR'));
+        $productId = trim((string) ($data['instance_id'] ?? $data['backmarket_id'] ?? $data['product_id'] ?? ''));
+        if ($productId === '') {
+            throw new BusinessRuleException(
+                'A Back Market product ID (backmarket_id) is required. Find it in the Back Market catalog, then create the listing.',
+                422
+            );
+        }
+
+        $grade = match (strtoupper((string) ($data['grading'] ?? 'A'))) {
+            'AA' => 'PREMIUM',
+            'A' => 'EXCELLENT',
+            'B' => 'GOOD',
+            'C' => 'FAIR',
+            default => 'EXCELLENT',
+        };
+
+        $row = [
+            'sku' => $sku,
+            'product_id' => $productId,
+            'quantity' => $quantity,
+            'price' => $price,
+            'min_price' => (string) ($data['reference_min_price'] ?? $price),
+            'max_price' => $price,
+            'comment' => trim((string) data_get($listingDetails, 'description', '')),
+            'warranty_delay' => 12,
+            'grade' => $grade,
+        ];
+
+        $result = $connector->upsertListings($connection, [$row]);
+        $stored = $this->persistOffer($connection, [
+            'listing_id' => 'pending-'.$sku,
+            'id' => 'pending-'.$sku,
+            'sku' => $sku,
+            'title' => data_get($listingDetails, 'title') ?: $sku,
+            'product_id' => $productId,
+            'backmarket_id' => $productId,
+            'quantity' => $quantity,
+            'price' => $price,
+            'min_price' => $row['min_price'],
+            'max_price' => $price,
+            'currency' => $currency,
+            'publication_state' => 1,
+            'grade' => $grade,
+            'warranty_delay' => 12,
+        ]);
+        $stored->pending_upload = true;
+        if ($listingDetails !== null) {
+            $stored->listing_details = $listingDetails;
+        }
+        $stored->save();
+
+        return [
+            'id' => $stored->external_offer_id,
+            'sku' => $sku,
+            'task_id' => $result['task_id'],
+            'pending_upload' => true,
+            'marketplace' => 'back-market',
+        ];
+    }
+
+    /**
+     * Build a CreateOffer body with only Refurbed-accepted fields and one product identifier.
+     *
+     * @param  array<string, mixed>  $data
+     * @param  list<array<string, string>>  $prices
+     * @return array<string, mixed>
+     */
+    private function createOfferPayload(array $data, array $prices): array
+    {
+        $instanceId = preg_replace('/\D+/', '', (string) ($data['instance_id'] ?? '')) ?: '';
+        $gtin = preg_replace('/\D+/', '', (string) ($data['gtin'] ?? '')) ?: '';
+        $mpn = trim((string) ($data['mpn'] ?? ''));
+
+        $payload = [
+            'sku' => trim((string) $data['sku']),
+            'grading' => $data['grading'],
+            'taxation' => $data['taxation'],
+            'warranty' => $data['warranty'],
+            'stock' => (int) $data['stock'],
+            'shipping_profile_id' => trim((string) $data['shipping_profile_id']),
+            'reference_currency_code' => strtoupper((string) $data['reference_currency_code']),
+            'reference_price' => (string) $data['reference_price'],
+            'create_market_prices' => $prices,
+        ];
+
+        if (array_key_exists('reference_min_price', $data) && $data['reference_min_price'] !== null && $data['reference_min_price'] !== '') {
+            $payload['reference_min_price'] = (string) $data['reference_min_price'];
+        }
+
+        // Prefer a numeric Refurbed instance ID; otherwise GTIN; otherwise MPN.
+        if ($instanceId !== '') {
+            $payload['instance_id'] = $instanceId;
+        } elseif ($gtin !== '') {
+            if (! preg_match('/^\d{8}$|^\d{12}$|^\d{13}$/', $gtin)) {
+                throw new BusinessRuleException('Enter a valid GTIN-8, GTIN-12, or GTIN-13 (EAN/UPC).', 422);
+            }
+            $payload['gtin'] = $gtin;
+        } elseif ($mpn !== '') {
+            $payload['mpn'] = $mpn;
+        } else {
+            throw new BusinessRuleException('A Refurbed instance ID or a recognized GTIN is required to create an offer.', 422);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $instance
+     * @return array<string, mixed>
+     */
+    private function normalizeInstance(array $instance): array
+    {
+        $id = $instance['id'] ?? $instance['instance_id'] ?? null;
+
+        return [
+            'id' => $id !== null && $id !== '' ? (string) $id : '',
+            'name' => (string) ($instance['name'] ?? ''),
+            'gtin' => isset($instance['gtin']) ? (string) $instance['gtin'] : (isset($instance['ean']) ? (string) $instance['ean'] : null),
+            'mpn' => isset($instance['mpn']) ? (string) $instance['mpn'] : null,
+        ];
     }
 
     public function listingMarketPrices(MarketplaceConnection $connection, array $data): array
@@ -546,9 +714,21 @@ class InventoryService
         return compact('row', 'sku', 'stock', 'code', 'message');
     }
 
-    public function synchronize(User $user): array
+    public function synchronize(User $user, ?string $marketplaceSlug = null): array
     {
-        [$connection, $connector] = $this->refurbed($user);
+        [$connection, $connector] = $this->inventoryConnection($user, $marketplaceSlug);
+
+        if ($connector instanceof BackMarketConnector) {
+            $result = $connector->sync($connection, 'inventory');
+            $connection->forceFill(['last_synced_at' => now(), 'last_error' => null])->save();
+
+            return [
+                'synchronized' => (int) ($result['success_count'] ?? 0),
+                'complete' => true,
+                'marketplace' => 'back-market',
+            ];
+        }
+
         $cursor = null;
         $seen = [];
         $count = 0;
@@ -585,20 +765,42 @@ class InventoryService
 
     private function refurbed(User $user): array
     {
-        $connection = MarketplaceConnection::query()
+        return $this->inventoryConnection($user, 'refurbed');
+    }
+
+    /**
+     * @return array{0: MarketplaceConnection, 1: RefurbedConnector|BackMarketConnector}
+     */
+    private function inventoryConnection(User $user, ?string $preferSlug = null): array
+    {
+        $connections = MarketplaceConnection::query()
             ->whereBelongsTo($user)
             ->where('status', MarketplaceConnectionStatus::Connected->value)
-            ->whereHas('marketplace', fn ($query) => $query->where('slug', 'refurbed'))
+            ->whereHas('marketplace', fn ($query) => $query->whereIn('slug', ['refurbed', 'back-market']))
             ->with('marketplace')
-            ->first();
+            ->get();
+
+        $connection = null;
+        if ($preferSlug) {
+            $connection = $connections->first(
+                fn (MarketplaceConnection $item) => $item->marketplace?->slug === $preferSlug
+            );
+        }
+
+        $connection ??= $connections->first(
+            fn (MarketplaceConnection $item) => $item->marketplace?->slug === 'refurbed'
+        ) ?? $connections->first();
 
         if (! $connection) {
-            throw new BusinessRuleException('Connect Refurbed before managing inventory.', 422);
+            throw new BusinessRuleException('Connect Refurbed or Back Market before managing inventory.', 422);
         }
 
         $connector = $this->connectors->connector($connection->marketplace);
-        if (! $connector instanceof RefurbedConnector) {
-            throw new BusinessRuleException('Inventory requires the real Refurbed connection.', 422);
+        if (
+            ! $connector instanceof RefurbedConnector
+            && ! $connector instanceof BackMarketConnector
+        ) {
+            throw new BusinessRuleException('Inventory requires a real marketplace connection.', 422);
         }
 
         return [$connection, $connector];
@@ -606,9 +808,14 @@ class InventoryService
 
     private function persistOffer(MarketplaceConnection $connection, array $offer): MarketplaceOffer
     {
+        if (($connection->marketplace?->slug ?? '') === 'back-market') {
+            return app(\App\Services\Marketplaces\Sync\BackMarketListingSynchronizer::class)
+                ->persist($connection, $offer);
+        }
+
         $externalId = trim((string) ($offer['id'] ?? data_get($offer, 'identifier.id', '')));
         if ($externalId === '') {
-            throw new BusinessRuleException('Refurbed returned an offer without an ID.', 502);
+            throw new BusinessRuleException('Marketplace returned an offer without an ID.', 502);
         }
 
         $values = [
@@ -643,7 +850,7 @@ class InventoryService
 
     private function offerMarkets(MarketplaceConnection $connection): array
     {
-        return collect($connection->settings['markets'] ?? [])
+        $markets = collect($connection->settings['markets'] ?? [])
             ->filter(fn (mixed $market): bool => is_array($market)
                 && ($market['manage_offers'] ?? false)
                 && ! empty($market['code']))
@@ -655,6 +862,26 @@ class InventoryService
             ->unique('code')
             ->values()
             ->all();
+
+        if ($markets === [] && ($connection->marketplace?->slug ?? '') === 'back-market') {
+            $locale = strtolower((string) ($connection->credentials['country_code'] ?? 'fr-fr'));
+            $parts = explode('-', $locale);
+            $code = strtoupper($parts[1] ?? $parts[0] ?? 'FR');
+            $currency = match ($locale) {
+                'en-us' => 'USD',
+                'ja-jp' => 'JPY',
+                'en-gb' => 'GBP',
+                default => 'EUR',
+            };
+
+            return [[
+                'code' => $code,
+                'name' => 'Back Market '.$code,
+                'currency_code' => $currency,
+            ]];
+        }
+
+        return $markets;
     }
 
     private function offerMarketCodes(array $offer): array

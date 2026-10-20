@@ -17,20 +17,19 @@ class MarketplaceConnectorManager
     ): MarketplaceConnector {
         $driver = $this->driverFor($marketplace);
 
-        $connector = match (
-            $marketplace->slug.':'.$driver
-        ) {
-            'back-market:mock' =>
-                MockMarketplaceConnector::class,
+        $connector = match (true) {
+            // Three Back Market platform slugs all use the same connector class
+            in_array($marketplace->slug, ['back-market-eu', 'back-market-na', 'back-market-ap', 'back-market'])
+                && $driver === 'mock' => MockMarketplaceConnector::class,
 
-            'back-market:real' =>
-                BackMarketConnector::class,
+            in_array($marketplace->slug, ['back-market-eu', 'back-market-na', 'back-market-ap', 'back-market'])
+                && $driver === 'real' => BackMarketConnector::class,
 
-            'refurbed:mock' =>
-                MockRefurbedConnector::class,
+            $marketplace->slug === 'refurbed'
+                && $driver === 'mock' => MockRefurbedConnector::class,
 
-            'refurbed:real' =>
-                RefurbedConnector::class,
+            $marketplace->slug === 'refurbed'
+                && $driver === 'real' => RefurbedConnector::class,
 
             default => throw new BusinessRuleException(
                 message: "No {$driver} connector is configured for {$marketplace->name}.",
@@ -49,21 +48,18 @@ class MarketplaceConnectorManager
     private function driverFor(
         Marketplace $marketplace
     ): string {
-        return match ($marketplace->slug) {
-            'back-market' => config(
-                'services.back_market.driver',
-                'mock'
-            ),
+        return match (true) {
+            in_array($marketplace->slug, ['back-market-eu', 'back-market-na', 'back-market-ap'])
+                => config('services.back_market.driver', 'mock'),
 
-            'refurbed' => config(
-                'services.refurbed.driver',
-                'mock'
-            ),
+            $marketplace->slug === 'refurbed'
+                => config('services.refurbed.driver', 'mock'),
 
-            default => config(
-                'marketplaces.driver',
-                'mock'
-            ),
+            // Legacy single back-market slug — treat same as the platform slugs
+            $marketplace->slug === 'back-market'
+                => config('services.back_market.driver', 'mock'),
+
+            default => 'mock',
         };
     }
 }

@@ -38,6 +38,10 @@ return [
     'back_market' => [
         'driver' => env('BACK_MARKET_DRIVER', 'mock'),
 
+        // Use preproduction by default so CelleXa targets https://preprod.backmarket.*
+        // until a connection explicitly selects production. See https://api.backmarket.dev/
+        'default_environment' => env('BACK_MARKET_ENV', 'preproduction'),
+
         'user_agent' => env(
             'BACK_MARKET_USER_AGENT',
             'BM-CelleXa-Marketplace;support@cellexa.com'
@@ -52,14 +56,14 @@ return [
         'urls' => [
             'production' => [
                 'eu' => 'https://www.backmarket.fr',
-                'na' => 'https://www.backmarket.com',
-                'ap' => 'https://www.backmarket.co.jp',
+                // 'na' => 'https://www.backmarket.com',
+                // 'ap' => 'https://www.backmarket.co.jp',
             ],
 
             'preproduction' => [
                 'eu' => 'https://preprod.backmarket.fr',
-                'na' => 'https://preprod.backmarket.com',
-                'ap' => 'https://preprod.backmarket.co.jp',
+                // 'na' => 'https://preprod.backmarket.com',
+                // 'ap' => 'https://preprod.backmarket.co.jp',
             ],
         ],
     ],

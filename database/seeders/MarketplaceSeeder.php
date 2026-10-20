@@ -11,10 +11,10 @@ class MarketplaceSeeder extends Seeder
     {
         $marketplaces = [
             [
-                'name' => 'Back Market',
-                'slug' => 'back-market',
+                'name' => 'Back Market Europe',
+                'slug' => 'back-market-eu',
                 'logo' => '/images/marketplaces/back-market.png',
-                'description' => 'Manage Back Market orders and inventory.',
+                'description' => 'Manage Back Market orders and inventory for the European platform (backmarket.fr).',
                 'capabilities' => [
                     'orders',
                     'inventory',
@@ -22,6 +22,30 @@ class MarketplaceSeeder extends Seeder
                 'is_active' => true,
                 'display_order' => 1,
             ],
+            // [
+            //     'name' => 'Back Market North America',
+            //     'slug' => 'back-market-na',
+            //     'logo' => '/images/marketplaces/back-market.png',
+            //     'description' => 'Manage Back Market orders and inventory for the North American platform (backmarket.com).',
+            //     'capabilities' => [
+            //         'orders',
+            //         'inventory',
+            //     ],
+            //     'is_active' => true,
+            //     'display_order' => 2,
+            // ],
+            // [
+            //     'name' => 'Back Market Asia-Pacific',
+            //     'slug' => 'back-market-ap',
+            //     'logo' => '/images/marketplaces/back-market.png',
+            //     'description' => 'Manage Back Market orders and inventory for the Asia-Pacific platform (backmarket.co.jp).',
+            //     'capabilities' => [
+            //         'orders',
+            //         'inventory',
+            //     ],
+            //     'is_active' => true,
+            //     'display_order' => 3,
+            // ],
             [
                 'name' => 'Refurbed',
                 'slug' => 'refurbed',
@@ -31,7 +55,7 @@ class MarketplaceSeeder extends Seeder
                     'orders',
                 ],
                 'is_active' => true,
-                'display_order' => 2,
+                'display_order' => 4,
             ],
         ];
 
@@ -41,5 +65,8 @@ class MarketplaceSeeder extends Seeder
                 $marketplace,
             );
         }
+
+        // Remove the old single back-market entry if it still exists
+        Marketplace::where('slug', 'back-market')->delete();
     }
 }

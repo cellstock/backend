@@ -10,8 +10,10 @@ use App\Models\MarketplaceOrderReturn;
 use App\Models\MarketplaceOffer;
 use App\Models\MarketplaceShippingLabel;
 use App\Models\User;
+use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
+use App\Services\Marketplaces\Sync\BackMarketOrderSynchronizer;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Mail;
@@ -146,45 +148,100 @@ class OrderService
         array $itemIdentifiers = [],
     ): MarketplaceOrder {
         $order = $this->findForUser($user, $orderId);
-
-        if ($order->connection->marketplace->slug !== 'refurbed') {
-            throw new BusinessRuleException(
-                message: 'Marketplace status updates are currently available for Refurbed orders only.',
-                status: 422,
-            );
-        }
-
+        $slug = $order->connection->marketplace->slug;
         $connector = $this->connectorManager->connector($order->connection->marketplace);
-
-        if (! $connector instanceof RefurbedConnector) {
-            throw new BusinessRuleException(
-                message: 'Refurbed status updates require the real marketplace connection.',
-                status: 422,
-            );
-        }
-
         $previousStatus = strtoupper((string) $order->status);
 
         try {
-            $updated = $connector->updateOrderStatus(
-                order: $order,
-                status: strtoupper($status),
-                trackingUrl: $trackingUrl,
-                itemIdentifiers: $itemIdentifiers,
-            );
+            if ($slug === 'back-market') {
+                if (! $connector instanceof BackMarketConnector) {
+                    throw new BusinessRuleException(
+                        message: 'Back Market status updates require the real marketplace connection.',
+                        status: 422,
+                    );
+                }
+
+                $updated = $this->updateBackMarketStatus(
+                    $connector,
+                    $order,
+                    strtoupper($status),
+                    $trackingUrl,
+                );
+            } elseif ($slug === 'refurbed') {
+                if (! $connector instanceof RefurbedConnector) {
+                    throw new BusinessRuleException(
+                        message: 'Refurbed status updates require the real marketplace connection.',
+                        status: 422,
+                    );
+                }
+
+                $updated = $connector->updateOrderStatus(
+                    order: $order,
+                    status: strtoupper($status),
+                    trackingUrl: $trackingUrl,
+                    itemIdentifiers: $itemIdentifiers,
+                );
+            } else {
+                throw new BusinessRuleException(
+                    message: 'Marketplace status updates are not available for this marketplace yet.',
+                    status: 422,
+                );
+            }
+
             $this->restoreStockForTerminalTransition($updated, $previousStatus);
 
             return $updated->fresh(['connection.marketplace', 'items']);
         } catch (RefurbedApiException $exception) {
             throw $exception;
+        } catch (BusinessRuleException $exception) {
+            throw $exception;
         } catch (Throwable $exception) {
             report($exception);
 
             throw new BusinessRuleException(
-                message: 'Refurbed rejected the order status update. The local order was not changed.',
+                message: 'The marketplace rejected the order status update. The local order was not changed.',
                 status: 422,
             );
         }
+    }
+
+    private function updateBackMarketStatus(
+        BackMarketConnector $connector,
+        MarketplaceOrder $order,
+        string $status,
+        ?string $trackingUrl,
+    ): MarketplaceOrder {
+        $newState = match ($status) {
+            'ACCEPTED', 'ACCEPT', 'CONFIRMED' => 2,
+            'SHIPPED', 'SHIPPING', 'SENT' => 3,
+            'CANCELLED', 'CANCELED', 'REJECTED' => 4,
+            default => throw new BusinessRuleException(
+                message: 'Unsupported Back Market status. Use accepted, shipped, or cancelled.',
+                status: 422,
+            ),
+        };
+
+        $payload = ['new_state' => $newState];
+        if ($newState === 3) {
+            $payload['tracking_number'] = $order->tracking_number
+                ?: throw new BusinessRuleException(
+                    message: 'A tracking number is required before marking a Back Market order as shipped.',
+                    status: 422,
+                );
+            if ($trackingUrl) {
+                $payload['tracking_url'] = $trackingUrl;
+            } elseif ($order->tracking_url) {
+                $payload['tracking_url'] = $order->tracking_url;
+            }
+            if ($order->shipper) {
+                $payload['shipper'] = $order->shipper;
+            }
+        }
+
+        $remote = $connector->updateOrder($order->connection, (string) $order->external_order_id, $payload);
+        app(BackMarketOrderSynchronizer::class)->syncOrder($order->connection, $remote);
+
+        return $order->fresh(['connection.marketplace', 'items']) ?? $order;
     }
 
     private function restoreStockForTerminalTransition(

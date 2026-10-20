@@ -24,9 +24,38 @@ class ConnectMarketplaceRequest extends FormRequest
                 'array',
             ],
             'credentials.api_key' => [
-                'required',
+                'required_without:credentials.access_token',
+                'nullable',
                 'string',
                 'max:2000',
+            ],
+
+            'credentials.access_token' => [
+                'required_without:credentials.api_key',
+                'nullable',
+                'string',
+                'max:2000',
+            ],
+
+            'credentials.platform' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'in:eu,na,ap',
+            ],
+
+            'credentials.country_code' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'regex:/^[a-z]{2}-[a-z]{2}$/',
+            ],
+
+            'credentials.environment' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'in:preproduction,production',
             ],
 
             'credentials.api_secret' => [

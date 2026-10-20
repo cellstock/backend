@@ -52,7 +52,7 @@ class BackMarketOrderSynchronizer
         ];
     }
 
-    private function syncOrder(
+    public function syncOrder(
         MarketplaceConnection $connection,
         array $orderData
     ): void {

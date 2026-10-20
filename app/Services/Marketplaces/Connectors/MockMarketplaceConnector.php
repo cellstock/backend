@@ -6,6 +6,7 @@ use App\Contracts\Marketplaces\MarketplaceConnector;
 use App\Models\Marketplace;
 use App\Models\MarketplaceConnection;
 use App\Services\Marketplaces\Mocks\BackMarketFixtureLoader;
+use App\Services\Marketplaces\Sync\BackMarketListingSynchronizer;
 use App\Services\Marketplaces\Sync\BackMarketOrderSynchronizer;
 use RuntimeException;
 
@@ -15,6 +16,7 @@ class MockMarketplaceConnector implements MarketplaceConnector
         private readonly Marketplace $marketplace,
         private readonly BackMarketFixtureLoader $fixtureLoader,
         private readonly BackMarketOrderSynchronizer $orderSynchronizer,
+        private readonly BackMarketListingSynchronizer $listingSynchronizer,
     ) {
     }
 
@@ -22,11 +24,22 @@ class MockMarketplaceConnector implements MarketplaceConnector
     {
         return [
             'api_key' => [
-                'required',
+                'required_without:access_token',
+                'nullable',
                 'string',
                 'min:8',
-                'max:500',
+                'max:2000',
             ],
+            'access_token' => [
+                'required_without:api_key',
+                'nullable',
+                'string',
+                'min:8',
+                'max:2000',
+            ],
+            'platform' => ['sometimes', 'nullable', 'string', 'in:eu,na,ap'],
+            'country_code' => ['sometimes', 'nullable', 'string', 'regex:/^[a-z]{2}-[a-z]{2}$/'],
+            'environment' => ['sometimes', 'nullable', 'string', 'in:preproduction,production'],
         ];
     }
 
@@ -69,7 +82,7 @@ class MockMarketplaceConnector implements MarketplaceConnector
             'orders' => $this->syncOrders($connection),
 
             'products',
-            'inventory' => $this->syncListings(),
+            'inventory' => $this->syncListings($connection),
 
             'full' => $this->syncAll($connection),
 
@@ -90,19 +103,21 @@ class MockMarketplaceConnector implements MarketplaceConnector
         );
     }
 
-    private function syncListings(): array
+    private function syncListings(MarketplaceConnection $connection): array
     {
         $response = $this->fixtureLoader->listings();
-        $count = count($response['results'] ?? []);
 
-        return $this->successfulResult($count);
+        return $this->listingSynchronizer->sync(
+            $connection,
+            $response['results'] ?? [],
+        );
     }
 
     private function syncAll(
         MarketplaceConnection $connection
     ): array {
         $orderResult = $this->syncOrders($connection);
-        $listingResult = $this->syncListings();
+        $listingResult = $this->syncListings($connection);
 
         return [
             'processed_count' =>

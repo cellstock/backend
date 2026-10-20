@@ -16,6 +16,7 @@ use App\Jobs\SyncMarketplace;
 use App\Models\MarketplaceSyncRun;
 
 use Throwable;
+use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 
 class MarketplaceService
@@ -101,6 +102,12 @@ class MarketplaceService
         )->validate();
 
         if (! $connector instanceof RefurbedConnector) {
+            if ($connector instanceof BackMarketConnector) {
+                return [
+                    'markets' => $connector->getLocales(),
+                ];
+            }
+
             return ['markets' => []];
         }
 
@@ -150,6 +157,9 @@ class MarketplaceService
         );
 
         $credentials = $data['credentials'];
+        if ($connector instanceof \App\Services\Marketplaces\Connectors\BackMarketConnector) {
+            $credentials = $connector->normalizeCredentials($credentials);
+        }
 
         Validator::make(
             $credentials,
@@ -157,6 +167,10 @@ class MarketplaceService
             [],
             [
                 'api_key' => 'API key',
+                'access_token' => 'API token',
+                'platform' => 'platform',
+                'country_code' => 'country code',
+                'environment' => 'environment',
             ]
         )->validate();
 
@@ -298,22 +312,33 @@ class MarketplaceService
                 $marketplace
             );
 
-            Validator::make(
+            $credentials = array_replace(
+                $connection->credentials ?? [],
                 $data['credentials'],
+            );
+            if ($connector instanceof \App\Services\Marketplaces\Connectors\BackMarketConnector) {
+                $credentials = $connector->normalizeCredentials($credentials);
+            }
+
+            Validator::make(
+                $credentials,
                 $connector->credentialRules(),
                 [],
                 [
                     'api_key' => 'API key',
+                    'access_token' => 'API token',
+                    'platform' => 'platform',
+                    'country_code' => 'country code',
+                    'environment' => 'environment',
                 ]
             )->validate();
 
             try {
                 $result = $connector->testConnection(
-                    $data['credentials']
+                    $credentials
                 );
 
-                $updateData['credentials'] =
-                    $data['credentials'];
+                $updateData['credentials'] = $credentials;
 
                 $updateData['external_account_id'] =
                     $result['external_account_id'] ?? null;

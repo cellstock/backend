@@ -960,7 +960,15 @@ class RefurbedConnector implements MarketplaceConnector
             $code === 6 && str_contains($normalized, 'offer') => 'An offer with this SKU already exists on Refurbed. Update the existing offer instead.',
             $code === 5 && str_contains($normalized, 'order item') => 'The Refurbed order item was not found. Synchronize orders and try again.',
             $code === 5 && str_contains($normalized, 'offer') => 'The Refurbed offer was not found. Check its SKU or create it first.',
-            $code === 3 && str_contains($normalized, 'instance') => 'The product instance was not found on Refurbed. Check the instance ID or GTIN.',
+            $code === 3 && (str_contains($normalized, 'instance')
+                || str_contains($normalized, 'gtin or id')
+                || (str_contains($normalized, 'gtin') && str_contains($normalized, 'not found'))
+                || (str_contains($normalized, 'unknown') && str_contains($normalized, 'instance')))
+                => 'The product was not found on Refurbed. Use a recognized GTIN/EAN, or pick a catalog item that still exists on Refurbed.',
+            $code === 5 && (str_contains($normalized, 'gtin or id')
+                || (str_contains($normalized, 'gtin') && str_contains($normalized, 'not found'))
+                || (str_contains($normalized, 'instance') && str_contains($normalized, 'not found')))
+                => 'The product was not found on Refurbed. Use a recognized GTIN/EAN, or pick a catalog item that still exists on Refurbed.',
             $code === 3 && str_contains($normalized, 'shipping profile') => 'The shipping profile was not found on Refurbed.',
             $code === 3 && str_contains($normalized, 'not a number') => 'Refurbed prices must use numbers with a decimal point, for example 199.99.',
             $code === 3 && str_contains($normalized, 'tracking') => 'Refurbed requires a valid complete HTTP or HTTPS tracking URL.',

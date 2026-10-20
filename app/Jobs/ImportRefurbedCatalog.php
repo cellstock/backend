@@ -156,7 +156,7 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
 
     private function item(array $values, array $header, int $importId): ?array
     {
-        $instanceId = $values[$header['instance id']] ?? '';
+        $instanceId = trim((string) ($values[$header['instance id']] ?? ''));
 
         if ($instanceId === '') {
             return null;
