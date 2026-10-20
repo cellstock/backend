@@ -1,36 +1,70 @@
 <?php
+
 namespace App\Services\Inventory;
 
 use Illuminate\Validation\ValidationException;
-use OpenSpout\Reader\CSV\Reader as CsvReader;
-use OpenSpout\Reader\XLSX\Reader as XlsxReader;
+use Throwable;
 
 class CatalogUploadValidator
 {
+    private CatalogSpreadsheet $spreadsheet;
+
+    public function __construct(?CatalogSpreadsheet $spreadsheet = null)
+    {
+        $this->spreadsheet = $spreadsheet ?? new CatalogSpreadsheet;
+    }
+
     public function validate(string $path): void
     {
-        $reader = strtolower(pathinfo($path, PATHINFO_EXTENSION)) === 'csv' ? new CsvReader : new XlsxReader;
+        $reader = $this->spreadsheet->reader($path);
+
         try {
             $reader->open($path);
+            $sawHeader = false;
+
             foreach ($reader->getSheetIterator() as $sheet) {
                 $header = null;
+
                 foreach ($sheet->getRowIterator() as $row) {
-                    $values = array_map(fn ($v) => trim((string) ($v ?? '')), $row->toArray());
-                    if ($header === null) {
-                        $header = array_map(fn ($v) => strtolower(trim(preg_replace('/\s+/', ' ', $v), "\xEF\xBB\xBF ")), $values);
-                        $missing = array_diff(['instance id', 'name', 'name de', 'attributes', 'attributes de', 'main category'], $header);
-                        if ($missing) throw ValidationException::withMessages(['file' => 'Missing catalog columns: '.implode(', ', $missing).'.']);
+                    $values = $this->spreadsheet->values($row);
+
+                    if ($this->spreadsheet->rowIsEmpty($values)) {
                         continue;
                     }
-                    if (($values[array_search('instance id', $header, true)] ?? '') !== '') return;
+
+                    if ($header === null) {
+                        $candidate = $this->spreadsheet->headerMap($values);
+                        if (! $this->spreadsheet->hasRequiredColumns($candidate)) {
+                            continue;
+                        }
+                        $header = $candidate;
+                        $sawHeader = true;
+
+                        continue;
+                    }
+
+                    $instanceIndex = $header['instance id'] ?? null;
+                    if ($instanceIndex !== null && ($values[$instanceIndex] ?? '') !== '') {
+                        return;
+                    }
                 }
-                break;
             }
-            throw ValidationException::withMessages(['file' => 'The catalog is empty or has no rows with an Instance ID.']);
-        } catch (ValidationException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
-            throw ValidationException::withMessages(['file' => 'The catalog could not be read. Upload a valid XLSX or CSV file.']);
+
+            if (! $sawHeader) {
+                throw ValidationException::withMessages([
+                    'file' => 'Missing catalog columns: '.implode(', ', CatalogSpreadsheet::REQUIRED_COLUMNS).'. Optional column: sku.',
+                ]);
+            }
+
+            throw ValidationException::withMessages([
+                'file' => 'The catalog is empty or has no rows with an Instance ID. If the file has multiple sheets, put the catalog on a sheet that includes an Instance ID column.',
+            ]);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (Throwable) {
+            throw ValidationException::withMessages([
+                'file' => 'The catalog could not be read. Upload a valid XLSX or CSV file.',
+            ]);
         } finally {
             $reader->close();
         }

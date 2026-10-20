@@ -57,6 +57,10 @@ class RefurbedCatalogController extends Controller
 
     public function storeChunk(Request $request): JsonResponse
     {
+        if (function_exists('set_time_limit')) {
+            set_time_limit(120);
+        }
+
         $data = $request->validate([
             'upload_id' => ['required', 'uuid'],
             'chunk_index' => ['required', 'integer', 'min:0'],
@@ -153,22 +157,27 @@ class RefurbedCatalogController extends Controller
             ->when($search !== '', fn ($query) => $query->where(function ($searchQuery) use ($search): void {
                 $searchQuery->when(
                     preg_match('/^\d+$/', $search) === 1,
-                    fn ($nested) => $nested->where('instance_id', 'like', $search.'%'),
+                    fn ($nested) => $nested
+                        ->where('instance_id', 'like', $search.'%')
+                        ->orWhere('sku', 'like', $search.'%'),
                     fn ($nested) => $nested->where(function ($textQuery) use ($search): void {
                         $textQuery
-                            ->whereFullText(['name', 'name_de', 'main_category'], $search)
+                            ->where('sku', $search)
+                            ->orWhere('sku', 'like', $search.'%')
+                            ->orWhereFullText(['name', 'name_de', 'main_category'], $search)
                             ->orWhere('name', 'like', $search.'%')
                             ->orWhere('name_de', 'like', $search.'%');
                     })
                 );
             }))
             ->when($search !== '', fn ($query) => $query->orderByRaw(
-                'CASE WHEN instance_id = ? THEN 0 ELSE 1 END',
-                [$search]
+                'CASE WHEN sku = ? THEN 0 WHEN instance_id = ? THEN 1 ELSE 2 END',
+                [$search, $search]
             ))
             ->orderBy('instance_id')
             ->paginate($limit, [
                 'instance_id',
+                'sku',
                 'name',
                 'name_de',
                 'attributes',
@@ -214,12 +223,10 @@ class RefurbedCatalogController extends Controller
         string $originalName,
         string $storedPath
     ): RefurbedCatalogImport {
-        try {
-            app(\App\Services\Inventory\CatalogUploadValidator::class)->validate(Storage::disk('local')->path($storedPath));
-        } catch (\Throwable $exception) {
-            Storage::disk('local')->delete($storedPath);
-            throw $exception;
-        }
+        // Do not validate the full XLSX/CSV here — large catalogs exceed PHP's
+        // max_execution_time while OpenSpout loads shared strings, causing a 500
+        // on the final chunk request. Header/content validation runs in the
+        // ImportRefurbedCatalog job (long timeout) and surfaces on the import record.
         $import = RefurbedCatalogImport::query()->create([
             'user_id' => $request->user()->id,
             'original_name' => $originalName,

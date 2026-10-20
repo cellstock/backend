@@ -4,14 +4,12 @@ namespace App\Jobs;
 
 use App\Models\RefurbedCatalogImport;
 use App\Models\RefurbedCatalogItem;
+use App\Services\Inventory\CatalogSpreadsheet;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Storage;
-use OpenSpout\Common\Entity\Row;
-use OpenSpout\Reader\CSV\Reader as CsvReader;
-use OpenSpout\Reader\ReaderInterface;
-use OpenSpout\Reader\XLSX\Reader as XlsxReader;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 use Throwable;
 
@@ -37,13 +35,17 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
 
     public function handle(): void
     {
+        if (function_exists('set_time_limit')) {
+            set_time_limit(0);
+        }
+
         $import = RefurbedCatalogImport::query()->findOrFail($this->catalogImportId);
         $path = Storage::disk('local')->path($import->stored_path);
-        $reader = $this->reader($path);
+        $spreadsheet = app(CatalogSpreadsheet::class);
+        $reader = null;
         $imported = 0;
         $failed = 0;
         $batch = [];
-        $header = [];
 
         $import->update([
             'status' => 'processing',
@@ -53,16 +55,27 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
         ]);
 
         try {
-            app(\App\Services\Inventory\CatalogUploadValidator::class)->validate($path);
+            // Single pass only — validating first then importing re-reads a 40MB+
+            // XLSX (shared strings) and often times out or looks like an empty file.
+            $reader = $spreadsheet->reader($path);
             $reader->open($path);
 
             foreach ($reader->getSheetIterator() as $sheet) {
-                foreach ($sheet->getRowIterator() as $rowNumber => $row) {
-                    $values = $this->values($row);
+                $header = [];
 
-                    if ($rowNumber === 1) {
-                        $header = $this->header($values);
-                        $this->validateHeader($header);
+                foreach ($sheet->getRowIterator() as $row) {
+                    $values = $spreadsheet->values($row);
+
+                    if ($spreadsheet->rowIsEmpty($values)) {
+                        continue;
+                    }
+
+                    if ($header === []) {
+                        $candidate = $spreadsheet->headerMap($values);
+                        if (! $spreadsheet->hasRequiredColumns($candidate)) {
+                            continue;
+                        }
+                        $header = $candidate;
 
                         continue;
                     }
@@ -84,12 +97,16 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
                         $this->progress($import, $imported, $failed);
                     }
                 }
-
-                break;
             }
 
             if ($batch !== []) {
                 $this->store($batch);
+            }
+
+            if ($imported === 0) {
+                throw new RuntimeException(
+                    'The catalog is empty or has no rows with an Instance ID. Your file’s first sheet is empty — catalog rows are on another sheet (for example “Refurbed Orders”).'
+                );
             }
 
             RefurbedCatalogItem::query()
@@ -103,8 +120,16 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
                 'failed_rows' => $failed,
                 'completed_at' => now(),
             ]);
+        } catch (Throwable $exception) {
+            $import->update([
+                'status' => 'failed',
+                'error_message' => $this->formatError($exception),
+                'completed_at' => now(),
+            ]);
         } finally {
-            $reader->close();
+            if ($reader !== null) {
+                $reader->close();
+            }
             Storage::disk('local')->delete($import->stored_path);
         }
     }
@@ -115,43 +140,20 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
             ->whereKey($this->catalogImportId)
             ->update([
                 'status' => 'failed',
-                'error_message' => $exception?->getMessage() ?? 'Catalog import failed.',
+                'error_message' => $this->formatError($exception) ?: 'Catalog import failed.',
                 'completed_at' => now(),
             ]);
     }
 
-    private function reader(string $path): ReaderInterface
+    private function formatError(?Throwable $exception): string
     {
-        return strtolower(pathinfo($path, PATHINFO_EXTENSION)) === 'csv'
-            ? new CsvReader
-            : new XlsxReader;
-    }
+        if ($exception instanceof ValidationException) {
+            $messages = collect($exception->errors())->flatten()->filter()->values();
 
-    private function values(Row $row): array
-    {
-        return array_map(
-            fn (mixed $value): string => trim((string) ($value ?? '')),
-            $row->toArray()
-        );
-    }
-
-    private function header(array $values): array
-    {
-        return collect($values)
-            ->mapWithKeys(fn (string $value, int $index) => [
-                strtolower(trim(preg_replace('/\s+/', ' ', $value))) => $index,
-            ])
-            ->all();
-    }
-
-    private function validateHeader(array $header): void
-    {
-        $required = ['instance id', 'name', 'name de', 'attributes', 'attributes de', 'main category'];
-        $missing = array_diff($required, array_keys($header));
-
-        if ($missing !== []) {
-            throw new RuntimeException('Missing catalog columns: '.implode(', ', $missing).'.');
+            return $messages->first() ?: ($exception->getMessage() ?: 'The catalog file is invalid.');
         }
+
+        return $exception?->getMessage() ?: 'Catalog import failed.';
     }
 
     private function item(array $values, array $header, int $importId): ?array
@@ -162,9 +164,12 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
             return null;
         }
 
+        $skuIndex = $header['sku'] ?? null;
+
         return [
             'catalog_import_id' => $importId,
             'instance_id' => $instanceId,
+            'sku' => $skuIndex === null ? null : $this->nullable($values[$skuIndex] ?? ''),
             'name' => $this->nullable($values[$header['name']] ?? ''),
             'name_de' => $this->nullable($values[$header['name de']] ?? ''),
             'attributes' => $this->nullable($values[$header['attributes']] ?? ''),
@@ -185,7 +190,7 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
         RefurbedCatalogItem::query()->upsert(
             $items,
             ['instance_id'],
-            ['catalog_import_id', 'name', 'name_de', 'attributes', 'attributes_de', 'main_category', 'updated_at']
+            ['catalog_import_id', 'sku', 'name', 'name_de', 'attributes', 'attributes_de', 'main_category', 'updated_at']
         );
     }
 

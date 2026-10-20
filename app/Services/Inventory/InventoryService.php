@@ -256,9 +256,39 @@ class InventoryService
             $offer = MarketplaceOffer::where('marketplace_connection_id', $connection->id)->where('sku', $identifier)->first();
             if ($offer) {
                 if (! $offer->instance_id) throw new BusinessRuleException('This SKU has no linked Refurbed product yet. Search by EAN instead.', 422);
-                return ['id' => (string) $offer->instance_id, 'name' => $offer->instance_name ?: $offer->sku, 'gtin' => $offer->ean];
+                return [
+                    'id' => (string) $offer->instance_id,
+                    'name' => $offer->instance_name ?: $offer->sku,
+                    'gtin' => $offer->ean,
+                    'sku' => $offer->sku,
+                ];
             }
-            if (! preg_match('/^\d{8,14}$/', $identifier)) throw new BusinessRuleException('No matching SKU was found in your connected Refurbed inventory.', 404);
+
+            $catalogItem = RefurbedCatalogItem::query()
+                ->where('sku', $identifier)
+                ->latest('catalog_import_id')
+                ->first();
+            if ($catalogItem) {
+                $remote = $this->normalizeInstance(
+                    $connector->getInstance($connection, (string) $catalogItem->instance_id, 'id')
+                );
+
+                return [
+                    'id' => $remote['id'] !== '' ? $remote['id'] : (string) $catalogItem->instance_id,
+                    'name' => $remote['name'] !== '' ? $remote['name'] : ($catalogItem->name ?: $identifier),
+                    'name_de' => $catalogItem->name_de,
+                    'attributes' => $catalogItem->attributes,
+                    'attributes_de' => $catalogItem->attributes_de,
+                    'category' => $catalogItem->main_category,
+                    'gtin' => $remote['gtin'] ?? null,
+                    'sku' => $catalogItem->sku,
+                ];
+            }
+
+            if (! preg_match('/^\d{8,14}$/', $identifier)) {
+                throw new BusinessRuleException('No matching SKU was found in your inventory or imported catalog.', 404);
+            }
+
             return $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin'));
         }
 
@@ -281,6 +311,7 @@ class InventoryService
                 'attributes_de' => $local?->attributes_de,
                 'category' => $local?->main_category,
                 'gtin' => $remote['gtin'] ?? null,
+                'sku' => $local?->sku,
             ];
         }
 

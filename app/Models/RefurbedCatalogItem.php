@@ -10,6 +10,7 @@ class RefurbedCatalogItem extends Model
     protected $fillable = [
         'catalog_import_id',
         'instance_id',
+        'sku',
         'name',
         'name_de',
         'attributes',
