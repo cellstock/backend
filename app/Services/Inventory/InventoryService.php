@@ -31,7 +31,12 @@ class InventoryService
         $markets = $this->offerMarkets($connection);
         $marketCode = strtoupper((string) ($filters['market'] ?? data_get($markets, '0.code', '')));
 
-        if ($marketCode !== '' && ! collect($markets)->contains('code', $marketCode)) {
+        if (
+            $marketCode !== ''
+            && ! collect($markets)->contains(
+                fn (array $market): bool => strtoupper((string) $market['code']) === $marketCode
+            )
+        ) {
             throw new BusinessRuleException('This market is not enabled for offer management.', 422);
         }
 
@@ -48,19 +53,42 @@ class InventoryService
 
         $paginator = MarketplaceOffer::query()
             ->where('marketplace_connection_id', $connection->id)
-            ->when($marketCode !== '', fn ($query) => $query->whereJsonContains('market_codes', $marketCode))
+            ->when($marketCode !== '', function ($query) use ($marketCode): void {
+                // Strict market filter — do not include empty market_codes rows,
+                // or every market picker choice shows almost the same inventory.
+                $query->where(function ($nested) use ($marketCode): void {
+                    $nested
+                        ->whereJsonContains('market_codes', $marketCode)
+                        ->orWhereJsonContains('market_codes', strtolower($marketCode));
+                });
+            })
             ->when($filters['search'] ?? null, function ($query, string $search) use ($filters): void {
-                $search = '%'.str_replace(['%', '_'], ['\\%', '\\_'], trim($search)).'%';
+                $term = trim($search);
+                if ($term === '') {
+                    return;
+                }
+                $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $term).'%';
                 $searchBy = $filters['search_by'] ?? 'all';
-                $query->where(function ($nested) use ($search, $searchBy): void {
+                $query->where(function ($nested) use ($like, $searchBy): void {
                     if ($searchBy === 'sku') {
-                        $nested->where('sku', 'like', $search);
+                        $nested->where('sku', 'like', $like);
                     } elseif ($searchBy === 'title') {
-                        $nested->where('instance_name', 'like', $search);
+                        $nested
+                            ->where('instance_name', 'like', $like)
+                            ->orWhere('listing_details->title', 'like', $like);
                     } elseif ($searchBy === 'ean') {
-                        $nested->where('ean', 'like', $search);
+                        $nested
+                            ->where('ean', 'like', $like)
+                            ->orWhere('listing_details->ean', 'like', $like)
+                            ->orWhere('listing_details->mp_refurbed_ean', 'like', $like);
                     } else {
-                        $nested->where('sku', 'like', $search)->orWhere('instance_name', 'like', $search)->orWhere('external_offer_id', 'like', $search)->orWhere('ean', 'like', $search);
+                        $nested
+                            ->where('sku', 'like', $like)
+                            ->orWhere('instance_name', 'like', $like)
+                            ->orWhere('external_offer_id', 'like', $like)
+                            ->orWhere('ean', 'like', $like)
+                            ->orWhere('listing_details->title', 'like', $like)
+                            ->orWhere('listing_details->ean', 'like', $like);
                     }
                 });
             })
@@ -269,24 +297,47 @@ class InventoryService
                 ->latest('catalog_import_id')
                 ->first();
             if ($catalogItem) {
-                $remote = $this->normalizeInstance(
-                    $connector->getInstance($connection, (string) $catalogItem->instance_id, 'id')
-                );
+                return $this->instanceFromCatalog($connection, $connector, $catalogItem, $identifier);
+            }
 
-                return [
-                    'id' => $remote['id'] !== '' ? $remote['id'] : (string) $catalogItem->instance_id,
-                    'name' => $remote['name'] !== '' ? $remote['name'] : ($catalogItem->name ?: $identifier),
-                    'name_de' => $catalogItem->name_de,
-                    'attributes' => $catalogItem->attributes,
-                    'attributes_de' => $catalogItem->attributes_de,
-                    'category' => $catalogItem->main_category,
-                    'gtin' => $remote['gtin'] ?? null,
-                    'sku' => $catalogItem->sku,
-                ];
+            // Also accept Instance ID in this search box (UI text stays EAN/ASIN).
+            $byInstanceId = RefurbedCatalogItem::query()
+                ->where('instance_id', $identifier)
+                ->latest('catalog_import_id')
+                ->first();
+            if ($byInstanceId) {
+                return $this->instanceFromCatalog($connection, $connector, $byInstanceId, $identifier);
+            }
+
+            if (preg_match('/^\d{1,14}$/', $identifier) === 1 && strlen($identifier) < 8) {
+                try {
+                    $remote = $this->normalizeInstance(
+                        $connector->getInstance($connection, $identifier, 'id')
+                    );
+                    if (($remote['id'] ?? '') !== '') {
+                        $local = RefurbedCatalogItem::query()
+                            ->where('instance_id', $remote['id'])
+                            ->latest('catalog_import_id')
+                            ->first();
+
+                        return [
+                            'id' => $remote['id'],
+                            'name' => $remote['name'] !== '' ? $remote['name'] : ($local?->name ?? $identifier),
+                            'name_de' => $local?->name_de,
+                            'attributes' => $local?->attributes,
+                            'attributes_de' => $local?->attributes_de,
+                            'category' => $local?->main_category,
+                            'gtin' => $remote['gtin'] ?? null,
+                            'sku' => $local?->sku,
+                        ];
+                    }
+                } catch (\Throwable) {
+                    // Fall through to GTIN / not-found handling.
+                }
             }
 
             if (! preg_match('/^\d{8,14}$/', $identifier)) {
-                throw new BusinessRuleException('No matching SKU was found in your inventory or imported catalog.', 404);
+                throw new BusinessRuleException('No matching product was found for that EAN, ASIN, SKU, or Instance ID.', 404);
             }
 
             return $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin'));
@@ -331,6 +382,31 @@ class InventoryService
             'attributes' => $item->attributes,
             'attributes_de' => $item->attributes_de,
             'category' => $item->main_category,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function instanceFromCatalog(
+        MarketplaceConnection $connection,
+        RefurbedConnector $connector,
+        RefurbedCatalogItem $catalogItem,
+        string $fallbackName,
+    ): array {
+        $remote = $this->normalizeInstance(
+            $connector->getInstance($connection, (string) $catalogItem->instance_id, 'id')
+        );
+
+        return [
+            'id' => $remote['id'] !== '' ? $remote['id'] : (string) $catalogItem->instance_id,
+            'name' => $remote['name'] !== '' ? $remote['name'] : ($catalogItem->name ?: $fallbackName),
+            'name_de' => $catalogItem->name_de,
+            'attributes' => $catalogItem->attributes,
+            'attributes_de' => $catalogItem->attributes_de,
+            'category' => $catalogItem->main_category,
+            'gtin' => $remote['gtin'] ?? null,
+            'sku' => $catalogItem->sku,
         ];
     }
 
@@ -682,6 +758,16 @@ class InventoryService
             $stored->forceFill(['pending_upload' => false])->save();
         }
 
+        // Keep the same SKU quantity on every marketplace connection for this user.
+        if (array_key_exists('stock', $data) && $stored->sku) {
+            app(SharedStockService::class)->setBySku(
+                $user,
+                (string) $stored->sku,
+                (int) $stored->stock,
+                (string) $stored->external_offer_id,
+            );
+        }
+
         return $remoteOffer ?? ['id' => $stored->external_offer_id];
     }
 
@@ -995,14 +1081,22 @@ class InventoryService
 
     private function backfillOfferMarketCodes(MarketplaceConnection $connection): void
     {
+        $defaultCodes = array_values(array_filter(array_column(
+            $this->offerMarkets($connection),
+            'code'
+        )));
+
         MarketplaceOffer::query()
             ->where('marketplace_connection_id', $connection->id)
             ->where(function ($query): void {
                 $query->whereNull('market_codes')->orWhereJsonLength('market_codes', 0);
             })
             ->get()
-            ->each(function (MarketplaceOffer $offer): void {
+            ->each(function (MarketplaceOffer $offer) use ($defaultCodes): void {
                 $codes = $this->offerMarketCodes($offer->raw_payload ?? []);
+                if ($codes === []) {
+                    $codes = $defaultCodes;
+                }
                 if ($codes !== []) {
                     $offer->forceFill(['market_codes' => $codes])->save();
                 }

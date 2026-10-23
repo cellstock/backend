@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Services\Inventory\InventoryService;
+use App\Jobs\PushMarketplaceInventory;
 use App\Models\MarketplaceConnection;
 use App\Models\MarketplaceOffer;
+use App\Models\MarketplacePushPreference;
+use App\Models\SellerProfile;
+use App\Services\Inventory\InventoryService;
 use App\Services\Marketplaces\MarketplaceOperationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,7 +24,7 @@ class InventoryController extends Controller
     {
         $data = $request->validate([
             'page' => ['nullable', 'integer', 'min:1'],
-            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:300'],
             'search' => ['nullable', 'string', 'max:255'],
             'search_by' => ['nullable', 'in:all,sku,title,ean'],
             'status' => ['nullable', 'string', 'max:50'],
@@ -133,10 +136,25 @@ class InventoryController extends Controller
             'market_code' => ['required', 'string', 'max:10'],
         ]);
 
+        $result = $this->inventory->importStocks($request->user(), $data['file'], $data['market_code']);
+
+        $shouldPush = SellerProfile::query()
+            ->where('user_id', $request->user()->id)
+            ->value('push_after_upload');
+
+        if ($shouldPush) {
+            MarketplacePushPreference::query()
+                ->where('user_id', $request->user()->id)
+                ->each(fn (MarketplacePushPreference $preference) => PushMarketplaceInventory::dispatch(
+                    $preference->id,
+                    true,
+                ));
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Inventory file validated. Accepted stock updates are queued for synchronization.',
-            'data' => $this->inventory->importStocks($request->user(), $data['file'], $data['market_code']),
+            'data' => $result,
         ]);
     }
 

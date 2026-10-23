@@ -189,10 +189,28 @@ class OrderController extends Controller
             'workflow_status' => ['sometimes', 'string', 'in:open,dispatched,on_hold'],
             'payment_status' => ['sometimes', 'string', 'in:paid,refunded,partially_refunded,waiting_for_payment'],
             'vat_number' => ['sometimes', 'nullable', 'string', 'max:64'],
+            'shipper' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'tracking_number' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'tracking_url' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ]);
         $marketplaceOrder = $this->orderService->findForUser($request->user(), $order);
         $marketplaceOrder->update($data);
-        return response()->json(['success' => true, 'message' => 'Order notes saved.', 'data' => ['order' => new OrderResource($marketplaceOrder)]]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Order delivery options saved.',
+            'data' => [
+                'order' => new OrderResource(
+                    $marketplaceOrder->fresh([
+                        'connection.marketplace',
+                        'items',
+                        'shippingLabels',
+                        'shippingAddress',
+                        'billingAddress',
+                    ]) ?? $marketplaceOrder
+                ),
+            ],
+        ]);
     }
 
     public function updateItemShipping(Request $request, int $order, int $item): JsonResponse

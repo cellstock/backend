@@ -15,3 +15,7 @@ Schedule::command('marketplaces:sync-enabled')
 Schedule::command('refurbed:sync-reference-data')
     ->everyTwoMinutes()
     ->withoutOverlapping();
+
+Schedule::command('marketplaces:run-scheduled-pushes')
+    ->everyMinute()
+    ->withoutOverlapping();

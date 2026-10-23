@@ -73,6 +73,7 @@ class OrderResource extends JsonResource
                 ?? $this->latestShippingLabelValue('tracking_url'),
             'shipper' => $this->shipper
                 ?? $this->latestShippingLabelValue('carrier'),
+            'shipping_type' => $this->shippingType(),
 
             'ordered_at' => $this->ordered_at?->toISOString(),
             'modified_at' => $this->modified_at?->toISOString(),
@@ -136,6 +137,29 @@ class OrderResource extends JsonResource
         }
 
         return $this->shippingLabels->first()?->{$field};
+    }
+
+    private function shippingType(): ?string
+    {
+        $payload = is_array($this->raw_payload) ? $this->raw_payload : [];
+        $type = $this->nullableString(
+            $payload['shipping_method']
+                ?? $payload['delivery_mode']
+                ?? $payload['shipping_type']
+                ?? data_get($payload, 'shipping.method')
+                ?? null
+        );
+
+        if ($type !== null) {
+            return $type;
+        }
+
+        $slug = $this->connection?->marketplace?->slug ?? '';
+        if (str_starts_with((string) $slug, 'back-market')) {
+            return 'Backship';
+        }
+
+        return null;
     }
 
     private function normalizeAddress(mixed $address): ?array

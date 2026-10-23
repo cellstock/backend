@@ -34,7 +34,24 @@ class OrderItemResource extends JsonResource
                 ? ($this->raw_payload['item_identifiers'] ?? [])
                 : [],
             'weight_kg' => is_array($this->raw_payload) ? ($this->raw_payload['weight_kg'] ?? null) : null,
-            'ean' => is_array($this->raw_payload) ? ($this->raw_payload['ean'] ?? data_get($this->raw_payload, 'offer_data.ean')) : null,
+            'ean' => is_array($this->raw_payload)
+                ? (
+                    $this->raw_payload['ean']
+                    ?? data_get($this->raw_payload, 'offer_data.ean')
+                    ?? data_get($this->raw_payload, 'product.ean')
+                    ?? data_get($this->raw_payload, 'listing.ean')
+                    ?? null
+                )
+                : null,
+            'category' => is_array($this->raw_payload)
+                ? (
+                    $this->raw_payload['category']
+                    ?? data_get($this->raw_payload, 'offer_data.category')
+                    ?? data_get($this->raw_payload, 'product.category')
+                    ?? data_get($this->raw_payload, 'listing.category')
+                    ?? null
+                )
+                : null,
         ];
     }
 }

@@ -109,18 +109,28 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
                 );
             }
 
-            RefurbedCatalogItem::query()
-                ->where('catalog_import_id', '!=', $import->id)
-                ->delete();
-
+            // Mark completed before cleanup so a queue timeout/retry cannot
+            // overwrite a successful import as "attempted too many times".
             $import->update([
                 'status' => 'completed',
                 'total_rows' => $imported + $failed,
                 'imported_rows' => $imported,
                 'failed_rows' => $failed,
+                'error_message' => null,
                 'completed_at' => now(),
             ]);
+
+            RefurbedCatalogItem::query()
+                ->where('catalog_import_id', '!=', $import->id)
+                ->delete();
         } catch (Throwable $exception) {
+            $import->refresh();
+
+            // Already marked completed (e.g. cleanup after success failed) — keep it.
+            if ($import->status === 'completed') {
+                return;
+            }
+
             $import->update([
                 'status' => 'failed',
                 'error_message' => $this->formatError($exception),
@@ -136,13 +146,36 @@ class ImportRefurbedCatalog implements ShouldBeUnique, ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
-        RefurbedCatalogImport::query()
-            ->whereKey($this->catalogImportId)
-            ->update([
-                'status' => 'failed',
-                'error_message' => $this->formatError($exception) ?: 'Catalog import failed.',
-                'completed_at' => now(),
+        $import = RefurbedCatalogImport::query()->find($this->catalogImportId);
+
+        if ($import === null) {
+            return;
+        }
+
+        // Queue retry_after races call failed() while the first worker is still
+        // importing (or after it finished). Never clobber a real success.
+        if ($import->status === 'completed') {
+            return;
+        }
+
+        if ((int) $import->imported_rows > 0
+            && RefurbedCatalogItem::query()
+                ->where('catalog_import_id', $import->id)
+                ->exists()) {
+            $import->update([
+                'status' => 'completed',
+                'error_message' => null,
+                'completed_at' => $import->completed_at ?? now(),
             ]);
+
+            return;
+        }
+
+        $import->update([
+            'status' => 'failed',
+            'error_message' => $this->formatError($exception) ?: 'Catalog import failed.',
+            'completed_at' => now(),
+        ]);
     }
 
     private function formatError(?Throwable $exception): string

@@ -12,6 +12,8 @@ use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\RefurbedCatalogController;
 use App\Http\Controllers\Api\RefurbedWebhookController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\MarketplacePushPreferenceController;
+use App\Http\Controllers\Api\SellerProfileController;
 use App\Http\Controllers\Api\ShippingProfileController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\SynchronizationIssueController;
@@ -151,4 +153,22 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/', 'index');
         Route::post('/{issue}/retry', 'retry');
     });
+    Route::prefix('seller-profile')
+        ->middleware('role:super_admin,admin')
+        ->controller(SellerProfileController::class)
+        ->group(function () {
+            Route::get('/', 'show');
+            Route::patch('/', 'update');
+            Route::get('/logo', 'logo');
+            Route::post('/logo', 'updateLogo');
+            Route::delete('/logo', 'deleteLogo');
+        });
+    Route::prefix('push-preferences')
+        ->middleware('role:super_admin,admin')
+        ->controller(MarketplacePushPreferenceController::class)
+        ->group(function () {
+            Route::get('/', 'index');
+            Route::post('/run', 'run');
+            Route::put('/{marketplace}', 'update')->where('marketplace', 'refurbed|back-market-eu');
+        });
 });

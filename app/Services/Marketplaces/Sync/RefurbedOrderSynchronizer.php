@@ -3,15 +3,16 @@
 namespace App\Services\Marketplaces\Sync;
 
 use App\Models\MarketplaceConnection;
-use App\Models\MarketplaceOffer;
 use App\Models\MarketplaceOrder;
+use App\Services\Inventory\SharedStockService;
 use App\Services\Marketplaces\Mappers\RefurbedOrderMapper;
 use Illuminate\Support\Facades\DB;
 
 class RefurbedOrderSynchronizer
 {
     public function __construct(
-        private readonly RefurbedOrderMapper $mapper
+        private readonly RefurbedOrderMapper $mapper,
+        private readonly SharedStockService $sharedStock,
     ) {
     }
 
@@ -70,6 +71,11 @@ class RefurbedOrderSynchronizer
         MarketplaceOrder $order,
         bool $decrease,
     ): void {
+        $user = $connection->user;
+        if (! $user) {
+            return;
+        }
+
         $quantities = $order->items
             ->reject(fn ($item) => in_array(
                 strtoupper((string) $item->status),
@@ -80,21 +86,8 @@ class RefurbedOrderSynchronizer
             ->map(fn ($items) => $items->sum('quantity'));
 
         foreach ($quantities as $sku => $quantity) {
-            $offer = MarketplaceOffer::query()
-                ->where('marketplace_connection_id', $connection->id)
-                ->where('sku', $sku)
-                ->lockForUpdate()
-                ->first();
-
-            if (! $offer) {
-                continue;
-            }
-
-            $offer->update([
-                'stock' => $decrease
-                    ? max(0, $offer->stock - (int) $quantity)
-                    : $offer->stock + (int) $quantity,
-            ]);
+            $delta = $decrease ? -(int) $quantity : (int) $quantity;
+            $this->sharedStock->adjustBySku($user, (string) $sku, $delta);
         }
     }
 

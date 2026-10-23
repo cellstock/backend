@@ -204,6 +204,9 @@ class RefurbedCatalogController extends Controller
             return null;
         }
 
+        $this->healFalseQueueFailure($import);
+        $import->refresh();
+
         return [
             'id' => $import->id,
             'file_name' => $import->original_name,
@@ -216,6 +219,42 @@ class RefurbedCatalogController extends Controller
             'completed_at' => $import->completed_at?->toISOString(),
             'created_at' => $import->created_at?->toISOString(),
         ];
+    }
+
+    /**
+     * When DB queue retry_after is shorter than the import runtime, Laravel
+     * marks the job as "attempted too many times" even though rows were saved.
+     * Heal that false failure so the settings page shows Completed.
+     */
+    private function healFalseQueueFailure(RefurbedCatalogImport $import): void
+    {
+        if ($import->status !== 'failed') {
+            return;
+        }
+
+        if ((int) $import->imported_rows <= 0) {
+            return;
+        }
+
+        $message = (string) $import->error_message;
+        $isQueueRace = str_contains($message, 'attempted too many times')
+            || str_contains($message, 'MaxAttemptsExceeded');
+
+        if (! $isQueueRace) {
+            return;
+        }
+
+        if (! RefurbedCatalogItem::query()
+            ->where('catalog_import_id', $import->id)
+            ->exists()) {
+            return;
+        }
+
+        $import->update([
+            'status' => 'completed',
+            'error_message' => null,
+            'completed_at' => $import->completed_at ?? now(),
+        ]);
     }
 
     private function createImport(

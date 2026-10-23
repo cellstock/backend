@@ -10,6 +10,7 @@ use App\Models\MarketplaceOrderReturn;
 use App\Models\MarketplaceOffer;
 use App\Models\MarketplaceShippingLabel;
 use App\Models\User;
+use App\Services\Inventory\SharedStockService;
 use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
@@ -26,6 +27,7 @@ class OrderService
     public function __construct(
         private readonly MarketplaceOrderVisibility $visibility,
         private readonly MarketplaceConnectorManager $connectorManager,
+        private readonly SharedStockService $sharedStock,
     ) {}
 
     public function paginateForUser(
@@ -254,16 +256,15 @@ class OrderService
             return;
         }
 
-        DB::transaction(function () use ($order): void {
-            $quantities = $order->items->groupBy('sku')->map(fn ($items) => $items->sum('quantity'));
-            foreach ($quantities as $sku => $quantity) {
-                $offer = MarketplaceOffer::where('marketplace_connection_id', $order->marketplace_connection_id)
-                    ->where('sku', $sku)->lockForUpdate()->first();
-                if ($offer) {
-                    $offer->increment('stock', (int) $quantity);
-                }
-            }
-        });
+        $user = $order->connection?->user;
+        if (! $user) {
+            return;
+        }
+
+        $quantities = $order->items->groupBy('sku')->map(fn ($items) => $items->sum('quantity'));
+        foreach ($quantities as $sku => $quantity) {
+            $this->sharedStock->adjustBySku($user, (string) $sku, (int) $quantity);
+        }
     }
 
     public function refresh(User $user, int $orderId): MarketplaceOrder

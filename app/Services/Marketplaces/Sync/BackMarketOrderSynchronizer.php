@@ -4,6 +4,7 @@ namespace App\Services\Marketplaces\Sync;
 
 use App\Models\MarketplaceConnection;
 use App\Models\MarketplaceOrder;
+use App\Services\Inventory\SharedStockService;
 use App\Services\Marketplaces\Mappers\BackMarketOrderMapper;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -11,7 +12,8 @@ use Throwable;
 class BackMarketOrderSynchronizer
 {
     public function __construct(
-        private readonly BackMarketOrderMapper $mapper
+        private readonly BackMarketOrderMapper $mapper,
+        private readonly SharedStockService $sharedStock,
     ) {
     }
 
@@ -64,6 +66,12 @@ class BackMarketOrderSynchronizer
                 $orderData
             );
 
+            $existing = MarketplaceOrder::query()
+                ->where('marketplace_connection_id', $connection->id)
+                ->where('external_order_id', $mappedOrder['external_order_id'])
+                ->lockForUpdate()
+                ->first();
+
             $order = MarketplaceOrder::query()
                 ->updateOrCreate(
                     [
@@ -93,6 +101,17 @@ class BackMarketOrderSynchronizer
                     ],
                     $mappedItem
                 );
+            }
+
+            // New Back Market orders reduce shared SKU stock on every marketplace.
+            if (! $existing && $connection->user) {
+                $order->load('items');
+                foreach ($order->items->groupBy('sku') as $sku => $items) {
+                    $qty = (int) $items->sum('quantity');
+                    if ($sku && $qty > 0) {
+                        $this->sharedStock->adjustBySku($connection->user, (string) $sku, -$qty);
+                    }
+                }
             }
         });
     }
