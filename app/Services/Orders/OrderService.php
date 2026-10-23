@@ -15,6 +15,7 @@ use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use App\Services\Marketplaces\Sync\BackMarketOrderSynchronizer;
+use App\Support\MarketplaceSlug;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Mail;
@@ -155,7 +156,7 @@ class OrderService
         $previousStatus = strtoupper((string) $order->status);
 
         try {
-            if ($slug === 'back-market') {
+            if (MarketplaceSlug::isBackMarket($slug)) {
                 if (! $connector instanceof BackMarketConnector) {
                     throw new BusinessRuleException(
                         message: 'Back Market status updates require the real marketplace connection.',
@@ -169,7 +170,7 @@ class OrderService
                     strtoupper($status),
                     $trackingUrl,
                 );
-            } elseif ($slug === 'refurbed') {
+            } elseif (MarketplaceSlug::isRefurbed($slug)) {
                 if (! $connector instanceof RefurbedConnector) {
                     throw new BusinessRuleException(
                         message: 'Refurbed status updates require the real marketplace connection.',

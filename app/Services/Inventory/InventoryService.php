@@ -12,6 +12,7 @@ use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use App\Services\Marketplaces\MarketplaceOperationService;
+use App\Support\MarketplaceSlug;
 use Illuminate\Http\UploadedFile;
 
 class InventoryService
@@ -518,7 +519,7 @@ class InventoryService
             'sku' => $sku,
             'task_id' => $result['task_id'],
             'pending_upload' => true,
-            'marketplace' => 'back-market',
+            'marketplace' => $connection->marketplace?->slug ?? 'back-market-eu',
         ];
     }
 
@@ -899,7 +900,7 @@ class InventoryService
             return [
                 'synchronized' => (int) ($result['success_count'] ?? 0),
                 'complete' => true,
-                'marketplace' => 'back-market',
+                'marketplace' => $connection->marketplace?->slug ?? 'back-market-eu',
             ];
         }
 
@@ -950,19 +951,22 @@ class InventoryService
         $connections = MarketplaceConnection::query()
             ->whereBelongsTo($user)
             ->where('status', MarketplaceConnectionStatus::Connected->value)
-            ->whereHas('marketplace', fn ($query) => $query->whereIn('slug', ['refurbed', 'back-market']))
+            ->whereHas('marketplace', fn ($query) => MarketplaceSlug::constrainInventoryQuery($query))
             ->with('marketplace')
             ->get();
 
         $connection = null;
         if ($preferSlug) {
             $connection = $connections->first(
-                fn (MarketplaceConnection $item) => $item->marketplace?->slug === $preferSlug
+                fn (MarketplaceConnection $item) => MarketplaceSlug::sameFamily(
+                    $item->marketplace?->slug,
+                    $preferSlug
+                )
             );
         }
 
         $connection ??= $connections->first(
-            fn (MarketplaceConnection $item) => $item->marketplace?->slug === 'refurbed'
+            fn (MarketplaceConnection $item) => MarketplaceSlug::isRefurbed($item->marketplace?->slug)
         ) ?? $connections->first();
 
         if (! $connection) {
@@ -982,7 +986,7 @@ class InventoryService
 
     private function persistOffer(MarketplaceConnection $connection, array $offer): MarketplaceOffer
     {
-        if (($connection->marketplace?->slug ?? '') === 'back-market') {
+        if (MarketplaceSlug::isBackMarket($connection->marketplace?->slug)) {
             return app(\App\Services\Marketplaces\Sync\BackMarketListingSynchronizer::class)
                 ->persist($connection, $offer);
         }
@@ -1041,7 +1045,7 @@ class InventoryService
             ->values()
             ->all();
 
-        if ($markets === [] && ($connection->marketplace?->slug ?? '') === 'back-market') {
+        if ($markets === [] && MarketplaceSlug::isBackMarket($connection->marketplace?->slug)) {
             $locale = strtolower((string) ($connection->credentials['country_code'] ?? 'fr-fr'));
             $parts = explode('-', $locale);
             $code = strtoupper($parts[1] ?? $parts[0] ?? 'FR');

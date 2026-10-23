@@ -32,8 +32,17 @@ class InventoryController extends Controller
             'stock' => ['nullable', 'in:in,out'],
             'sort' => ['nullable', 'in:created_desc,created_asc,stock_desc,stock_asc,price_desc,price_asc'],
             'market' => ['nullable', 'string', 'max:10'],
-            'marketplace' => ['nullable', 'string', 'in:refurbed,back-market'],
+            'marketplace' => ['nullable', 'string', 'max:64'],
         ]);
+
+        if (
+            isset($data['marketplace'])
+            && ! \App\Support\MarketplaceSlug::isInventorySupported($data['marketplace'])
+        ) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'marketplace' => 'Select Refurbed or Back Market.',
+            ]);
+        }
 
         return response()->json(['success' => true, 'data' => $this->inventory->list($request->user(), $data)]);
     }
@@ -72,32 +81,57 @@ class InventoryController extends Controller
             'taxation' => ['required', 'in:GROSS,MARGINAL'],
             'warranty' => ['required', 'in:M12'],
             'stock' => ['required', 'integer', 'min:0'],
-            'shipping_profile_id' => ['required_unless:marketplace,back-market', 'nullable', 'string'],
+            'shipping_profile_id' => ['nullable', 'string'],
             'reference_currency_code' => ['required', 'string', 'size:3'],
             'reference_price' => ['required', 'decimal:0,2', 'min:0'],
             'reference_min_price' => ['sometimes', 'nullable', 'decimal:0,2', 'min:0'],
-            'market_code' => ['required_unless:marketplace,back-market', 'nullable', 'string', 'max:10'],
+            'market_code' => ['nullable', 'string', 'max:10'],
             'market_prices' => ['sometimes', 'array', 'min:1', 'max:100'],
             'market_prices.*.market_code' => ['required', 'string', 'distinct', 'max:10'],
             'market_prices.*.price' => ['required', 'decimal:0,2', 'min:0'],
             'market_prices.*.min_price' => ['nullable', 'decimal:0,2', 'min:0'],
             'listing_details' => ['sometimes', 'array'],
             'listing_details.*' => ['nullable', 'string', 'max:2000'],
-            'marketplace' => ['sometimes', 'nullable', 'string', 'in:refurbed,back-market'],
+            'marketplace' => ['sometimes', 'nullable', 'string', 'max:64'],
             'product_id' => ['sometimes', 'nullable', 'string', 'max:64'],
             'backmarket_id' => ['sometimes', 'nullable', 'string', 'max:64'],
         ]);
 
         $marketplaceSlug = $data['marketplace'] ?? 'refurbed';
+        if (! \App\Support\MarketplaceSlug::isInventorySupported($marketplaceSlug)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'marketplace' => 'Select Refurbed or Back Market.',
+            ]);
+        }
+
+        $isBackMarket = \App\Support\MarketplaceSlug::isBackMarket($marketplaceSlug);
+        $isRefurbed = \App\Support\MarketplaceSlug::isRefurbed($marketplaceSlug);
+
+        if ($isRefurbed) {
+            if (empty($data['shipping_profile_id'])) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'shipping_profile_id' => 'A shipping profile is required for Refurbed.',
+                ]);
+            }
+            if (empty($data['market_code'])) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'market_code' => 'A market code is required for Refurbed.',
+                ]);
+            }
+        }
+
         $connection = MarketplaceConnection::whereBelongsTo($request->user())
             ->where('status', 'connected')
-            ->whereHas('marketplace', fn ($query) => $query->where('slug', $marketplaceSlug))
+            ->whereHas(
+                'marketplace',
+                fn ($query) => \App\Support\MarketplaceSlug::constrainQuery($query, $marketplaceSlug)
+            )
             ->with('marketplace')
             ->firstOrFail();
         $payload = array_filter($data, fn ($value) => $value !== null && $value !== '');
-        $payload['marketplace'] = $marketplaceSlug;
+        $payload['marketplace'] = $connection->marketplace->slug;
 
-        if ($marketplaceSlug === 'refurbed') {
+        if ($isRefurbed) {
             $prices = $this->inventory->listingMarketPrices($connection, $payload);
             if (! \App\Models\MarketplaceShippingProfile::where('marketplace_connection_id', $connection->id)->where('external_id', $payload['shipping_profile_id'] ?? '')->exists()) {
                 throw \Illuminate\Validation\ValidationException::withMessages(['shipping_profile_id' => 'Select a shipping profile belonging to this connection.']);
@@ -109,7 +143,7 @@ class InventoryController extends Controller
         }
 
         // Back Market create uses CSV upsert; shipping profile is optional.
-        if (empty($payload['shipping_profile_id'])) {
+        if ($isBackMarket && empty($payload['shipping_profile_id'])) {
             $payload['shipping_profile_id'] = 'n/a';
         }
         $offer = $this->inventory->create($request->user(), $payload);

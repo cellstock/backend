@@ -72,7 +72,7 @@ class MockMarketplaceConnector implements MarketplaceConnector
             $connection->credentials
         );
 
-        if ($this->marketplace->slug !== 'back-market') {
+        if (! \App\Support\MarketplaceSlug::isBackMarket($this->marketplace->slug)) {
             throw new RuntimeException(
                 "Mock synchronization is not implemented for {$this->marketplace->name}."
             );
