@@ -3,11 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Jobs\PushMarketplaceInventory;
 use App\Models\MarketplaceConnection;
 use App\Models\MarketplaceOffer;
-use App\Models\MarketplacePushPreference;
-use App\Models\SellerProfile;
 use App\Services\Inventory\InventoryService;
 use App\Services\Marketplaces\MarketplaceOperationService;
 use Illuminate\Http\JsonResponse;
@@ -171,19 +168,6 @@ class InventoryController extends Controller
         ]);
 
         $result = $this->inventory->importStocks($request->user(), $data['file'], $data['market_code']);
-
-        $shouldPush = SellerProfile::query()
-            ->where('user_id', $request->user()->id)
-            ->value('push_after_upload');
-
-        if ($shouldPush) {
-            MarketplacePushPreference::query()
-                ->where('user_id', $request->user()->id)
-                ->each(fn (MarketplacePushPreference $preference) => PushMarketplaceInventory::dispatch(
-                    $preference->id,
-                    true,
-                ));
-        }
 
         return response()->json([
             'success' => true,

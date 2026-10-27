@@ -337,11 +337,21 @@ class InventoryService
                 }
             }
 
-            if (! preg_match('/^\d{8,14}$/', $identifier)) {
-                throw new BusinessRuleException('No matching product was found for that EAN, ASIN, SKU, or Instance ID.', 404);
+            if (preg_match('/^\d{8,14}$/', $identifier) === 1) {
+                return $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin'));
             }
 
-            return $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin'));
+            // Non-digit values: try ASIN/MPN after SKU / catalog lookup.
+            try {
+                return $this->normalizeInstance(
+                    $connector->getInstance($connection, $identifier, 'mpn')
+                );
+            } catch (\Throwable) {
+                throw new BusinessRuleException(
+                    'No matching product was found for that EAN, ASIN, SKU, or Instance ID.',
+                    404
+                );
+            }
         }
 
         if (in_array($identifierType, ['gtin', 'mpn'], true)) {
