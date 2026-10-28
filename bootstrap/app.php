@@ -170,8 +170,12 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
+            report($exception);
+
             return ApiResponse::error(
-                message: 'An unexpected error occurred.',
+                message: config('app.debug')
+                    ? $exception->getMessage()
+                    : 'An unexpected error occurred.',
                 status: 500,
             );
         });

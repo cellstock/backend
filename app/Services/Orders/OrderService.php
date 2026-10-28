@@ -18,6 +18,7 @@ use App\Services\Marketplaces\Sync\BackMarketOrderSynchronizer;
 use App\Support\MarketplaceSlug;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -43,6 +44,7 @@ class OrderService
             ->with([
                 'connection.marketplace',
                 'items',
+                'shippingLabels',
             ]);
 
         return $this->visibility->apply($query, $user)
@@ -141,6 +143,69 @@ class OrderService
             ]);
 
         return $this->visibility->apply($query, $user)->findOrFail($orderId);
+    }
+
+    /**
+     * Persist Serial/IMEI on local order items and push them to Refurbed when connected.
+     *
+     * @param  list<array{id: string, identifier_type: string, value: string}>  $identifiers
+     */
+    public function saveItemIdentifiers(
+        User $user,
+        int $orderId,
+        array $identifiers,
+        bool $syncRemote = true,
+    ): MarketplaceOrder {
+        $order = $this->findForUser($user, $orderId);
+        $byItem = collect($identifiers)->keyBy(fn (array $entry) => (string) $entry['id']);
+
+        foreach ($order->items as $item) {
+            $entry = $byItem->get((string) $item->external_order_item_id);
+            try {
+                $payload = is_array($item->raw_payload) ? $item->raw_payload : [];
+            } catch (Throwable) {
+                $payload = [];
+            }
+
+            if (is_array($entry) && trim((string) ($entry['value'] ?? '')) !== '') {
+                $payload['item_identifiers'] = [[
+                    'identifier_type' => $entry['identifier_type'],
+                    'value' => trim((string) $entry['value']),
+                ]];
+            } else {
+                unset($payload['item_identifiers']);
+            }
+
+            $item->raw_payload = $payload;
+            $item->save();
+        }
+
+        if (! $syncRemote || $identifiers === []) {
+            return $order->fresh(['connection.marketplace', 'items', 'shippingLabels']) ?? $order;
+        }
+
+        $slug = $order->connection->marketplace->slug ?? '';
+        if (! MarketplaceSlug::isRefurbed($slug)) {
+            return $order->fresh(['connection.marketplace', 'items', 'shippingLabels']) ?? $order;
+        }
+
+        $connector = $this->connectorManager->connector($order->connection->marketplace);
+        if (! $connector instanceof RefurbedConnector) {
+            return $order->fresh(['connection.marketplace', 'items', 'shippingLabels']) ?? $order;
+        }
+
+        try {
+            return $connector->updateOrderItemIdentifiers($order, $identifiers)
+                ->loadMissing(['connection.marketplace', 'items', 'shippingLabels']);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            // Local IMEI is already saved; surface a soft failure for the caller.
+            throw new BusinessRuleException(
+                message: 'Serial/IMEI was saved in CelleXa, but Refurbed sync failed: '.$exception->getMessage(),
+                status: 422,
+            );
+        }
     }
 
     public function updateStatus(
@@ -393,6 +458,65 @@ class OrderService
         }
 
         return Storage::disk('local')->path($order->custom_invoice_path);
+    }
+
+    /**
+     * @return array{contents: string, filename: string, url: string}
+     */
+    public function shippingLabelPdf(User $user, int $orderId, string $format = 'label_printer'): array
+    {
+        $order = $this->findForUser($user, $orderId);
+        $label = $order->shippingLabels()->latest('id')->first()
+            ?: throw new BusinessRuleException('Create a shipping label before printing it.', 404);
+
+        $urls = is_array($label->normal_printer_urls) ? $label->normal_printer_urls : [];
+        $url = match ($format) {
+            'top_left', 'top_right', 'bottom_left', 'bottom_right' => $urls[$format]
+                ?? $urls['top_right']
+                ?? $urls['top_left']
+                ?? $label->label_printer_url,
+            default => $label->label_printer_url
+                ?? $urls['top_right']
+                ?? $urls['top_left']
+                ?? null,
+        };
+
+        if (! is_string($url) || trim($url) === '') {
+            throw new BusinessRuleException('This shipping label has no printable PDF URL.', 404);
+        }
+
+        $request = Http::timeout(60)->withHeaders([
+            'Accept' => 'application/pdf,*/*',
+        ]);
+
+        // Match Refurbed connector TLS settings (Windows/XAMPP often lacks a CA bundle).
+        $caBundle = config('services.refurbed.ca_bundle');
+        if (is_string($caBundle) && $caBundle !== '' && is_file($caBundle)) {
+            $request = $request->withOptions(['verify' => $caBundle]);
+        } elseif (app()->environment('local')) {
+            $request = $request->withOptions(['verify' => false]);
+        }
+
+        try {
+            $response = $request->get($url);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            throw new BusinessRuleException(
+                'The shipping label PDF could not be downloaded from the carrier: '.$exception->getMessage(),
+                502,
+            );
+        }
+
+        if (! $response->successful() || $response->body() === '') {
+            throw new BusinessRuleException('The shipping label PDF could not be downloaded from the carrier.', 502);
+        }
+
+        return [
+            'contents' => $response->body(),
+            'filename' => 'shipping-label-'.$order->external_order_id.'.pdf',
+            'url' => $url,
+        ];
     }
 
     public function createShippingLabel(User $user, int $orderId, array $labelData): array

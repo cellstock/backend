@@ -466,6 +466,60 @@ class RefurbedConnector implements MarketplaceConnector
         ];
     }
 
+    /**
+     * Push Serial/IMEI identifiers to Refurbed while keeping each item's current state.
+     *
+     * @param  list<array{id: string, identifier_type: string, value: string}>  $itemIdentifiers
+     */
+    public function updateOrderItemIdentifiers(
+        MarketplaceOrder $order,
+        array $itemIdentifiers,
+    ): MarketplaceOrder {
+        $order->loadMissing(['connection.marketplace', 'items']);
+
+        if ($order->items->isEmpty() || $itemIdentifiers === []) {
+            return $order;
+        }
+
+        $identifiersByItem = collect($itemIdentifiers)->keyBy(
+            fn ($entry) => (string) ($entry['id'] ?? '')
+        );
+
+        $updates = $order->items
+            ->map(function ($item) use ($identifiersByItem): ?array {
+                $identifier = $identifiersByItem->get((string) $item->external_order_item_id);
+                if (! is_array($identifier) || trim((string) ($identifier['value'] ?? '')) === '') {
+                    return null;
+                }
+
+                $state = strtoupper((string) $item->status);
+                // Refurbed rejects ACCEPTED→ACCEPTED (and similar) even when only IMEI changes.
+                // Identifiers are accepted on a real transition (e.g. ACCEPTED→SHIPPED).
+                if (! in_array($state, ['SHIPPED', 'RETURNED'], true)) {
+                    return null;
+                }
+
+                return [
+                    'id' => (string) $item->external_order_item_id,
+                    'state' => $state,
+                    'item_identifiers' => [[
+                        'identifier_type' => $identifier['identifier_type'],
+                        'value' => trim((string) $identifier['value']),
+                    ]],
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        if ($updates === []) {
+            // Local save already done by the caller; nothing safe to push without a status change.
+            return $order;
+        }
+
+        return $this->batchUpdateOrderItemsState($order, $updates, trackingUrl: null, status: null);
+    }
+
     public function updateOrderStatus(
         MarketplaceOrder $order,
         string $status,
@@ -518,6 +572,26 @@ class RefurbedConnector implements MarketplaceConnector
             return $update;
         })->all();
 
+        return $this->batchUpdateOrderItemsState($order, $updates, $trackingUrl, $status);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $updates
+     */
+    private function batchUpdateOrderItemsState(
+        MarketplaceOrder $order,
+        array $updates,
+        ?string $trackingUrl,
+        ?string $status,
+    ): MarketplaceOrder {
+        if ($updates === []) {
+            return $order;
+        }
+
+        if (count($updates) > 50) {
+            throw new RuntimeException('Refurbed supports at most 50 item state updates in one atomic order action.');
+        }
+
         $updatedItems = [];
         $failures = [];
 
@@ -562,28 +636,35 @@ class RefurbedConnector implements MarketplaceConnector
                 }
 
                 $item->update([
-                    'status' => $remoteItem['state'] ?? $status,
-                    'raw_payload' => array_replace($item->raw_payload ?? [], $remoteItem),
+                    'status' => $remoteItem['state'] ?? $item->status,
+                    'raw_payload' => array_replace(
+                        is_array($item->raw_payload) ? $item->raw_payload : [],
+                        $remoteItem
+                    ),
                 ]);
             }
 
-            $rawPayload = $order->raw_payload ?? [];
-            if ($failures === []) {
-                $rawPayload['state'] = $status;
-            }
-
-            $order->update([
-                'status' => $failures === [] ? $status : $order->status,
-                'tracking_url' => $updatedItems !== [] && $trackingUrl
-                    ? $trackingUrl
-                    : $order->tracking_url,
-                'shipped_at' => $updatedItems !== [] && $status === 'SHIPPED'
-                    ? now()
-                    : $order->shipped_at,
+            $orderUpdate = [
                 'modified_at' => now(),
                 'last_synced_at' => now(),
-                'raw_payload' => $rawPayload,
-            ]);
+            ];
+
+            if ($status !== null && $failures === []) {
+                $rawPayload = is_array($order->raw_payload) ? $order->raw_payload : [];
+                $rawPayload['state'] = $status;
+                $orderUpdate['status'] = $status;
+                $orderUpdate['raw_payload'] = $rawPayload;
+            }
+
+            if ($updatedItems !== [] && $trackingUrl) {
+                $orderUpdate['tracking_url'] = $trackingUrl;
+            }
+
+            if ($updatedItems !== [] && $status === 'SHIPPED') {
+                $orderUpdate['shipped_at'] = now();
+            }
+
+            $order->update($orderUpdate);
         });
 
         if ($failures !== []) {
@@ -600,7 +681,7 @@ class RefurbedConnector implements MarketplaceConnector
             );
         }
 
-        return $order->fresh(['connection.marketplace', 'items']);
+        return $order->fresh(['connection.marketplace', 'items']) ?? $order;
     }
 
     public function listOrderItemReturns(MarketplaceOrder $order): array

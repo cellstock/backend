@@ -168,6 +168,31 @@ class OrderController extends Controller
         ]);
     }
 
+    public function downloadShippingLabel(Request $request, int $order): \Symfony\Component\HttpFoundation\Response
+    {
+        $data = $request->validate([
+            'format' => ['nullable', 'string', Rule::in([
+                'label_printer',
+                'top_left',
+                'top_right',
+                'bottom_left',
+                'bottom_right',
+            ])],
+        ]);
+
+        $pdf = $this->orderService->shippingLabelPdf(
+            $request->user(),
+            $order,
+            $data['format'] ?? 'label_printer',
+        );
+
+        return response($pdf['contents'], 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="'.$pdf['filename'].'"',
+            'Cache-Control' => 'private, max-age=60',
+        ]);
+    }
+
     public function merchantAddresses(Request $request, int $order): JsonResponse
     {
         return response()->json([
@@ -192,25 +217,79 @@ class OrderController extends Controller
             'shipper' => ['sometimes', 'nullable', 'string', 'max:255'],
             'tracking_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'tracking_url' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'item_identifiers' => ['sometimes', 'nullable', 'array'],
+            'item_identifiers.*.id' => ['required', 'string'],
+            'item_identifiers.*.identifier_type' => ['required', 'in:IMEI,SERIAL_NUMBER'],
+            'item_identifiers.*.value' => ['required', 'string', 'max:255'],
         ]);
-        $marketplaceOrder = $this->orderService->findForUser($request->user(), $order);
-        $marketplaceOrder->update($data);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Order delivery options saved.',
-            'data' => [
-                'order' => new OrderResource(
-                    $marketplaceOrder->fresh([
-                        'connection.marketplace',
-                        'items',
-                        'shippingLabels',
-                        'shippingAddress',
-                        'billingAddress',
-                    ]) ?? $marketplaceOrder
-                ),
-            ],
-        ]);
+        try {
+            $marketplaceOrder = $this->orderService->findForUser($request->user(), $order);
+
+            $identifiers = $data['item_identifiers'] ?? null;
+            unset($data['item_identifiers']);
+
+            if ($data !== []) {
+                $marketplaceOrder->update($data);
+            }
+
+            $remoteMessage = '';
+            if (is_array($identifiers)) {
+                // Persist locally first so Save Changes never depends on Refurbed being up.
+                $marketplaceOrder = $this->orderService->saveItemIdentifiers(
+                    $request->user(),
+                    $order,
+                    $identifiers,
+                    syncRemote: false,
+                );
+
+                if ($identifiers !== []) {
+                    $canPushIdentifiers = $marketplaceOrder->items->contains(
+                        fn ($item): bool => in_array(strtoupper((string) $item->status), ['SHIPPED', 'RETURNED'], true)
+                    );
+
+                    if (! $canPushIdentifiers) {
+                        $remoteMessage = ' Serial/IMEI stored in CelleXa. Refurbed accepts identifiers when the item is shipped.';
+                    } else {
+                        try {
+                            $marketplaceOrder = $this->orderService->saveItemIdentifiers(
+                                $request->user(),
+                                $order,
+                                $identifiers,
+                                syncRemote: true,
+                            );
+                            $remoteMessage = ' Serial/IMEI also sent to Refurbed.';
+                        } catch (\Throwable $exception) {
+                            report($exception);
+                            $remoteMessage = ' Serial/IMEI saved in CelleXa, but Refurbed sync failed: '.$exception->getMessage();
+                        }
+                    }
+                }
+            }
+
+            // Never eager-load address columns as relations (they are encrypted JSON fields).
+            $marketplaceOrder = $marketplaceOrder->fresh([
+                'connection.marketplace',
+                'items',
+                'shippingLabels',
+            ]) ?? $marketplaceOrder;
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order changes saved.'.$remoteMessage,
+                'data' => [
+                    'order' => (new OrderResource($marketplaceOrder))->resolve(),
+                ],
+            ]);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            // Return a controlled JSON body (never the generic 500 unexpected-error mask).
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to save order changes: '.$exception->getMessage(),
+            ], 422);
+        }
     }
 
     public function updateItemShipping(Request $request, int $order, int $item): JsonResponse

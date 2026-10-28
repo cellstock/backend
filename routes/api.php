@@ -103,6 +103,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             Route::get('/{order}/invoice', 'invoice')->whereNumber('order')->name('invoice');
             Route::get('/{order}/invoice/custom', 'customInvoice')->whereNumber('order')->name('invoice.custom');
             Route::post('/{order}/shipping-label', 'createShippingLabel')->whereNumber('order')->name('shipping-label.create');
+            Route::get('/{order}/shipping-label/file', 'downloadShippingLabel')->whereNumber('order')->name('shipping-label.file');
             Route::get('/{order}/merchant-addresses', 'merchantAddresses')->whereNumber('order')->name('merchant-addresses.index');
             Route::patch('/{order}/edit-fields', 'updateEditFields')->whereNumber('order')->name('edit-fields.update');
             Route::patch('/{order}/address/{type}', 'updateAddress')->whereNumber('order')->name('address.update');
