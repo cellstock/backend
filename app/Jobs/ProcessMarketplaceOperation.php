@@ -60,6 +60,7 @@ class ProcessMarketplaceOperation implements ShouldQueue
                 (string) $payload['status'],
                 $payload['tracking_url'] ?? null,
                 $payload['item_identifiers'] ?? [],
+                $payload['tracking_number'] ?? null,
             )->toArray(),
             'order.refund' => $orders->refund(
                 $user,

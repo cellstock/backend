@@ -6,6 +6,8 @@ use App\Contracts\Marketplaces\MarketplaceConnector;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Marketplace;
 use App\Services\Marketplaces\Connectors\BackMarketConnector;
+use App\Services\Marketplaces\Connectors\LightspeedConnector;
+use App\Services\Marketplaces\Connectors\MockLightspeedConnector;
 use App\Services\Marketplaces\Connectors\MockMarketplaceConnector;
 use App\Services\Marketplaces\Connectors\MockRefurbedConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
@@ -31,6 +33,12 @@ class MarketplaceConnectorManager
             MarketplaceSlug::isRefurbed($marketplace->slug)
                 && $driver === 'real' => RefurbedConnector::class,
 
+            MarketplaceSlug::isLightspeed($marketplace->slug)
+                && $driver === 'mock' => MockLightspeedConnector::class,
+
+            MarketplaceSlug::isLightspeed($marketplace->slug)
+                && $driver === 'real' => LightspeedConnector::class,
+
             default => throw new BusinessRuleException(
                 message: "No {$driver} connector is configured for {$marketplace->name}.",
                 status: 501,
@@ -54,6 +62,10 @@ class MarketplaceConnectorManager
 
         if (MarketplaceSlug::isRefurbed($marketplace->slug)) {
             return config('services.refurbed.driver', 'mock');
+        }
+
+        if (MarketplaceSlug::isLightspeed($marketplace->slug)) {
+            return config('services.lightspeed.driver', 'mock');
         }
 
         return 'mock';

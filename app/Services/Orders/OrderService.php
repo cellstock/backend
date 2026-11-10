@@ -12,6 +12,8 @@ use App\Models\MarketplaceShippingLabel;
 use App\Models\User;
 use App\Services\Inventory\SharedStockService;
 use App\Services\Marketplaces\Connectors\BackMarketConnector;
+use App\Services\Marketplaces\Connectors\LightspeedConnector;
+use App\Services\Marketplaces\Connectors\MockLightspeedConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use App\Services\Marketplaces\Sync\BackMarketOrderSynchronizer;
@@ -214,11 +216,19 @@ class OrderService
         string $status,
         ?string $trackingUrl = null,
         array $itemIdentifiers = [],
+        ?string $trackingNumber = null,
     ): MarketplaceOrder {
         $order = $this->findForUser($user, $orderId);
         $slug = $order->connection->marketplace->slug;
         $connector = $this->connectorManager->connector($order->connection->marketplace);
         $previousStatus = strtoupper((string) $order->status);
+
+        if ($trackingNumber) {
+            $order->forceFill(['tracking_number' => $trackingNumber])->save();
+        }
+        if ($trackingUrl) {
+            $order->forceFill(['tracking_url' => $trackingUrl])->save();
+        }
 
         try {
             if (MarketplaceSlug::isBackMarket($slug)) {
@@ -248,6 +258,24 @@ class OrderService
                     status: strtoupper($status),
                     trackingUrl: $trackingUrl,
                     itemIdentifiers: $itemIdentifiers,
+                );
+            } elseif (MarketplaceSlug::isLightspeed($slug)) {
+                if (
+                    ! $connector instanceof LightspeedConnector
+                    && ! $connector instanceof MockLightspeedConnector
+                ) {
+                    throw new BusinessRuleException(
+                        message: 'Lightspeed status updates require a configured Lightspeed connection.',
+                        status: 422,
+                    );
+                }
+
+                $updated = $this->updateLightspeedStatus(
+                    $connector,
+                    $order->fresh() ?? $order,
+                    strtoupper($status),
+                    $trackingUrl,
+                    $trackingNumber,
                 );
             } else {
                 throw new BusinessRuleException(
@@ -310,6 +338,51 @@ class OrderService
         app(BackMarketOrderSynchronizer::class)->syncOrder($order->connection, $remote);
 
         return $order->fresh(['connection.marketplace', 'items']) ?? $order;
+    }
+
+    private function updateLightspeedStatus(
+        LightspeedConnector|MockLightspeedConnector $connector,
+        MarketplaceOrder $order,
+        string $status,
+        ?string $trackingUrl,
+        ?string $trackingNumber = null,
+    ): MarketplaceOrder {
+        $number = trim((string) ($trackingNumber ?: $order->tracking_number));
+        if ($number === '' && $trackingUrl) {
+            $number = $this->trackingCodeFromUrl($trackingUrl);
+        }
+
+        if ($number !== '') {
+            $order->forceFill(['tracking_number' => $number])->save();
+        }
+
+        return $connector->updateOrderStatus(
+            order: $order->fresh() ?? $order,
+            status: $status,
+            trackingNumber: $number !== '' ? $number : $order->tracking_number,
+            trackingUrl: $trackingUrl ?: $order->tracking_url,
+        );
+    }
+
+    private function trackingCodeFromUrl(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        if (! filter_var($value, FILTER_VALIDATE_URL)) {
+            return $value;
+        }
+
+        $path = trim((string) parse_url($value, PHP_URL_PATH), '/');
+        if ($path === '') {
+            return $value;
+        }
+
+        $parts = explode('/', $path);
+
+        return (string) end($parts);
     }
 
     private function restoreStockForTerminalTransition(

@@ -8,6 +8,8 @@ use App\Models\MarketplaceOffer;
 use App\Models\MarketplacePushPreference;
 use App\Models\User;
 use App\Services\Marketplaces\Connectors\BackMarketConnector;
+use App\Services\Marketplaces\Connectors\LightspeedConnector;
+use App\Services\Marketplaces\Connectors\MockLightspeedConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use Carbon\CarbonInterface;
@@ -50,6 +52,10 @@ class MarketplacePushService
             'refurbed' => [
                 'name' => 'Refurbed',
                 'logo' => '/images/marketplaces/refurbed.png',
+            ],
+            'lightspeed' => [
+                'name' => 'Lightspeed (Telefoongigant)',
+                'logo' => '/images/marketplaces/telefoongigant-logo.png',
             ],
         ];
 
@@ -470,6 +476,43 @@ class MarketplacePushService
             }
 
             return ['pushed' => count($rows), 'marketplace' => $slug];
+        }
+
+        if ($slug === 'lightspeed') {
+            $rows = [];
+            foreach ($offers as $offer) {
+                $variantId = trim((string) (
+                    $offer->external_offer_id
+                    ?: data_get($offer->raw_payload, 'variant.id')
+                    ?: ''
+                ));
+                if ($variantId === '') {
+                    continue;
+                }
+
+                $rows[] = [
+                    'variant_id' => $variantId,
+                    'stock' => max(0, (int) $offer->stock),
+                    'sku' => (string) $offer->sku,
+                ];
+            }
+
+            $pushed = 0;
+            if (
+                $connector instanceof LightspeedConnector
+                || $connector instanceof MockLightspeedConnector
+            ) {
+                $pushed = $connector->updateVariantStocks($connection, $rows);
+            }
+
+            if ($rows !== []) {
+                MarketplaceOffer::query()
+                    ->where('marketplace_connection_id', $connection->id)
+                    ->whereIn('external_offer_id', array_column($rows, 'variant_id'))
+                    ->update(['pending_upload' => false, 'last_synced_at' => now()]);
+            }
+
+            return ['pushed' => $pushed, 'marketplace' => $slug];
         }
 
         throw new RuntimeException("Push is not supported for marketplace [{$slug}].");

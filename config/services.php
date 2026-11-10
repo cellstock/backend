@@ -117,4 +117,33 @@ return [
         ),
     ],
 
+    'lightspeed' => [
+        'driver' => env('LIGHTSPEED_DRIVER', 'mock'),
+
+        // eu1 = api.webshopapp.com (NL/EU shops), us1 = api.shoplightspeed.com
+        'default_cluster' => env('LIGHTSPEED_CLUSTER', 'eu1'),
+
+        'default_language' => env('LIGHTSPEED_LANGUAGE', 'nl'),
+
+        // v1 product sync scope — only products matching this title filter
+        'product_title_filter' => env('LIGHTSPEED_PRODUCT_TITLE_FILTER', 'ipad'),
+
+        'clusters' => [
+            'eu1' => 'https://api.webshopapp.com',
+            'us1' => 'https://api.shoplightspeed.com',
+        ],
+
+        // Same CA bundle pattern as Refurbed — required on many Windows/XAMPP setups
+        'ca_bundle' => env(
+            'LIGHTSPEED_CA_BUNDLE',
+            storage_path('certs/cacert.pem')
+        ),
+
+        'timeout' => (int) env('LIGHTSPEED_TIMEOUT', 30),
+
+        'retry_times' => (int) env('LIGHTSPEED_RETRY_TIMES', 3),
+
+        'retry_delay' => (int) env('LIGHTSPEED_RETRY_DELAY', 500),
+    ],
+
 ];

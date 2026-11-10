@@ -74,12 +74,13 @@ class OrderController extends Controller
         $operation = $this->operations->queue($request->user(), $marketplaceOrder->marketplace_connection_id, 'order.status', 'order', $order, [
             'status' => $request->validated('status'),
             'tracking_url' => $request->validated('tracking_url'),
+            'tracking_number' => $request->validated('tracking_number'),
             'item_identifiers' => $request->validated('item_identifiers', []),
         ]);
 
         return response()->json([
             'success' => true,
-            'message' => 'Order status update queued for Refurbed.',
+            'message' => 'Order status update queued for the marketplace.',
             'data' => ['order' => new OrderResource($marketplaceOrder), 'operation_id' => $operation->id],
         ], 202);
     }

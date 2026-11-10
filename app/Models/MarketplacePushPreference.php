@@ -73,6 +73,6 @@ class MarketplacePushPreference extends Model
     /** @return list<string> */
     public static function supportedSlugs(): array
     {
-        return ['refurbed', 'back-market-eu'];
+        return ['refurbed', 'back-market-eu', 'lightspeed'];
     }
 }

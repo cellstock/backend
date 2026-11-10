@@ -23,7 +23,11 @@ class SyncMarketplace implements ShouldQueue
 
     public function __construct(
         public readonly int $syncRunId
-    ) {}
+    ) {
+        // Marketplace sync jobs must share the marketplaces queue used by
+        // inventory/order operations. Plain `queue:work` only listens to default.
+        $this->onQueue('marketplaces');
+    }
 
     public function backoff(): array
     {

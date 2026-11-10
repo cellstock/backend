@@ -22,9 +22,16 @@ final class MarketplaceSlug
         return str_starts_with(strtolower(trim((string) $slug)), 'back-market');
     }
 
+    public static function isLightspeed(?string $slug): bool
+    {
+        return strtolower(trim((string) $slug)) === 'lightspeed';
+    }
+
     public static function isInventorySupported(?string $slug): bool
     {
-        return self::isRefurbed($slug) || self::isBackMarket($slug);
+        return self::isRefurbed($slug)
+            || self::isBackMarket($slug)
+            || self::isLightspeed($slug);
     }
 
     public static function sameFamily(?string $a, ?string $b): bool
@@ -34,6 +41,10 @@ final class MarketplaceSlug
         }
 
         if (self::isBackMarket($a) && self::isBackMarket($b)) {
+            return true;
+        }
+
+        if (self::isLightspeed($a) && self::isLightspeed($b)) {
             return true;
         }
 
@@ -64,7 +75,8 @@ final class MarketplaceSlug
         $query->where(function ($nested): void {
             $nested
                 ->where('slug', 'refurbed')
-                ->orWhere('slug', 'like', 'back-market%');
+                ->orWhere('slug', 'like', 'back-market%')
+                ->orWhere('slug', 'lightspeed');
         });
     }
 }

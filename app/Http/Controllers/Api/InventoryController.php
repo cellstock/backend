@@ -37,7 +37,7 @@ class InventoryController extends Controller
             && ! \App\Support\MarketplaceSlug::isInventorySupported($data['marketplace'])
         ) {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'marketplace' => 'Select Refurbed or Back Market.',
+                'marketplace' => 'Select Refurbed, Back Market, or Lightspeed.',
             ]);
         }
 
@@ -56,7 +56,27 @@ class InventoryController extends Controller
 
     public function sync(Request $request): JsonResponse
     {
-        return response()->json(['success' => true, 'message' => 'Inventory synchronized and stored in CelleXa.', 'data' => $this->inventory->synchronize($request->user())]);
+        $data = $request->validate([
+            'marketplace' => ['nullable', 'string', 'max:64'],
+        ]);
+
+        if (
+            isset($data['marketplace'])
+            && ! \App\Support\MarketplaceSlug::isInventorySupported($data['marketplace'])
+        ) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'marketplace' => 'Select Refurbed, Back Market, or Lightspeed.',
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Inventory synchronized and stored in CelleXa.',
+            'data' => $this->inventory->synchronize(
+                $request->user(),
+                isset($data['marketplace']) ? (string) $data['marketplace'] : null
+            ),
+        ]);
     }
 
     public function diagnostics(Request $request): JsonResponse
@@ -97,7 +117,7 @@ class InventoryController extends Controller
         $marketplaceSlug = $data['marketplace'] ?? 'refurbed';
         if (! \App\Support\MarketplaceSlug::isInventorySupported($marketplaceSlug)) {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'marketplace' => 'Select Refurbed or Back Market.',
+                'marketplace' => 'Select Refurbed, Back Market, or Lightspeed.',
             ]);
         }
 
@@ -154,9 +174,26 @@ class InventoryController extends Controller
 
     public function show(Request $request, string $offerId): JsonResponse
     {
+        $data = $request->validate([
+            'marketplace' => ['nullable', 'string', 'max:64'],
+        ]);
+
+        if (
+            isset($data['marketplace'])
+            && ! \App\Support\MarketplaceSlug::isInventorySupported($data['marketplace'])
+        ) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'marketplace' => 'Select Refurbed, Back Market, or Lightspeed.',
+            ]);
+        }
+
         return response()->json([
             'success' => true,
-            'data' => ['offer' => $this->inventory->getOffer($request->user(), $offerId)],
+            'data' => ['offer' => $this->inventory->getOffer(
+                $request->user(),
+                $offerId,
+                isset($data['marketplace']) ? (string) $data['marketplace'] : null
+            )],
         ]);
     }
 
@@ -221,7 +258,9 @@ class InventoryController extends Controller
         }
 
         $offer = MarketplaceOffer::whereHas('connection', fn ($query) => $query->whereBelongsTo($request->user()))
-            ->where('external_offer_id', $offerId)->firstOrFail();
+            ->where('external_offer_id', $offerId)
+            ->with('connection.marketplace')
+            ->firstOrFail();
 
         if (isset($data['listing_details']) && is_array($data['listing_details'])) {
             $data['listing_details'] = collect($data['listing_details'])
@@ -249,13 +288,18 @@ class InventoryController extends Controller
             throw \Illuminate\Validation\ValidationException::withMessages(['shipping_profile_id' => 'Select a shipping profile belonging to this connection.']);
         }
 
-        // Push to Refurbed immediately (same as create). Queued updates were often
+        $slug = $offer->connection?->marketplace?->slug;
+        if ($slug) {
+            $data['marketplace'] = $slug;
+        }
+
+        // Push to the marketplace immediately (same as create). Queued updates were often
         // never processed when no queue worker was listening on "marketplaces".
         $updated = $this->inventory->update($request->user(), $offerId, $data);
 
         return response()->json([
             'success' => true,
-            'message' => 'Offer updated in Refurbed and saved in CelleXa.',
+            'message' => 'Offer updated on the marketplace and saved in CelleXa.',
             'data' => [
                 'offer' => $updated,
                 'operation_id' => null,
@@ -265,11 +309,43 @@ class InventoryController extends Controller
 
     public function destroy(Request $request, string $offerId): JsonResponse
     {
-        $offer = MarketplaceOffer::whereHas('connection', fn ($query) => $query->whereBelongsTo($request->user()))
-            ->where('external_offer_id', $offerId)->firstOrFail();
+        $data = $request->validate([
+            'marketplace' => ['nullable', 'string', 'max:64'],
+        ]);
+
+        $offer = MarketplaceOffer::whereHas('connection', function ($query) use ($request, $data): void {
+            $query->whereBelongsTo($request->user());
+            if (! empty($data['marketplace'])) {
+                $query->whereHas(
+                    'marketplace',
+                    fn ($marketplaceQuery) => \App\Support\MarketplaceSlug::constrainQuery(
+                        $marketplaceQuery,
+                        (string) $data['marketplace']
+                    )
+                );
+            }
+        })
+            ->where('external_offer_id', $offerId)
+            ->with('connection.marketplace')
+            ->firstOrFail();
+
+        if (\App\Support\MarketplaceSlug::isLightspeed($offer->connection?->marketplace?->slug)) {
+            $this->inventory->delete(
+                $request->user(),
+                $offerId,
+                $offer->connection?->marketplace?->slug
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Offer removed from Lightspeed inventory in CelleXa.',
+                'data' => ['operation_id' => null],
+            ]);
+        }
+
         $offer->update(['is_active' => false, 'pending_upload' => true]);
         $operation = $this->operations->queue($request->user(), $offer->marketplace_connection_id, 'offer.delete', 'offer', $offerId);
 
-        return response()->json(['success' => true, 'message' => 'Offer deletion queued for Refurbed synchronization.', 'data' => ['operation_id' => $operation->id]], 202);
+        return response()->json(['success' => true, 'message' => 'Offer deletion queued for marketplace synchronization.', 'data' => ['operation_id' => $operation->id]], 202);
     }
 }

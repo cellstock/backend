@@ -57,6 +57,19 @@ class MarketplaceSeeder extends Seeder
                 'is_active' => true,
                 'display_order' => 4,
             ],
+            [
+                'name' => 'Lightspeed (Telefoongigant)',
+                'slug' => 'lightspeed',
+                'logo' => '/images/marketplaces/telefoongigant-logo.png',
+                'description' => 'Sync iPad products/orders and push stock & shipment status to Lightspeed C-Series (telefoongigant.nl).',
+                'capabilities' => [
+                    'orders',
+                    'products',
+                    'inventory',
+                ],
+                'is_active' => true,
+                'display_order' => 5,
+            ],
         ];
 
         foreach ($marketplaces as $marketplace) {

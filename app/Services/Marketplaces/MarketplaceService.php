@@ -17,6 +17,7 @@ use App\Models\MarketplaceSyncRun;
 
 use Throwable;
 use App\Services\Marketplaces\Connectors\BackMarketConnector;
+use App\Services\Marketplaces\Connectors\LightspeedConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 
 class MarketplaceService
@@ -157,7 +158,10 @@ class MarketplaceService
         );
 
         $credentials = $data['credentials'];
-        if ($connector instanceof \App\Services\Marketplaces\Connectors\BackMarketConnector) {
+        if ($connector instanceof BackMarketConnector) {
+            $credentials = $connector->normalizeCredentials($credentials);
+        }
+        if ($connector instanceof LightspeedConnector) {
             $credentials = $connector->normalizeCredentials($credentials);
         }
 
@@ -167,10 +171,13 @@ class MarketplaceService
             [],
             [
                 'api_key' => 'API key',
+                'api_secret' => 'API secret',
                 'access_token' => 'API token',
                 'platform' => 'platform',
                 'country_code' => 'country code',
                 'environment' => 'environment',
+                'cluster' => 'Lightspeed cluster',
+                'language' => 'shop language',
             ]
         )->validate();
 
@@ -244,16 +251,22 @@ class MarketplaceService
         } catch (Throwable $exception) {
             report($exception);
 
+            $detail = trim($exception->getMessage());
+            $lastError = $detail !== ''
+                ? mb_strimwidth($detail, 0, 500, '...')
+                : 'The marketplace connection test failed.';
+
             $connection->update([
                 'status' =>
                     MarketplaceConnectionStatus::Failed,
                 'last_tested_at' => now(),
-                'last_error' =>
-                    'The marketplace connection test failed.',
+                'last_error' => $lastError,
             ]);
 
             throw new BusinessRuleException(
-                message: 'Unable to connect to the marketplace. Please verify the credentials.',
+                message: $connector instanceof LightspeedConnector
+                    ? $lastError
+                    : 'Unable to connect to the marketplace. Please verify the credentials.',
                 status: 422,
             );
         }
@@ -316,7 +329,10 @@ class MarketplaceService
                 $connection->credentials ?? [],
                 $data['credentials'],
             );
-            if ($connector instanceof \App\Services\Marketplaces\Connectors\BackMarketConnector) {
+            if ($connector instanceof BackMarketConnector) {
+                $credentials = $connector->normalizeCredentials($credentials);
+            }
+            if ($connector instanceof LightspeedConnector) {
                 $credentials = $connector->normalizeCredentials($credentials);
             }
 
@@ -326,10 +342,13 @@ class MarketplaceService
                 [],
                 [
                     'api_key' => 'API key',
+                    'api_secret' => 'API secret',
                     'access_token' => 'API token',
                     'platform' => 'platform',
                     'country_code' => 'country code',
                     'environment' => 'environment',
+                    'cluster' => 'Lightspeed cluster',
+                    'language' => 'shop language',
                 ]
             )->validate();
 

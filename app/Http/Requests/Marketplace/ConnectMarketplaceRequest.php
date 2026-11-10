@@ -65,6 +65,20 @@ class ConnectMarketplaceRequest extends FormRequest
                 'max:2000',
             ],
 
+            'credentials.cluster' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'in:eu1,us1',
+            ],
+
+            'credentials.language' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:10',
+            ],
+
             'credentials.merchant_id' => [
                 'sometimes',
                 'nullable',
@@ -75,6 +89,7 @@ class ConnectMarketplaceRequest extends FormRequest
             'settings.sync_orders' => ['sometimes', 'boolean'],
             'settings.sync_products' => ['sometimes', 'boolean'],
             'settings.sync_inventory' => ['sometimes', 'boolean'],
+            'settings.product_title_filter' => ['sometimes', 'nullable', 'string', 'max:100'],
             'settings.markets' => ['sometimes', 'array'],
             'settings.markets.*.code' => ['required', 'string', 'max:10'],
             'settings.markets.*.name' => ['required', 'string', 'max:100'],

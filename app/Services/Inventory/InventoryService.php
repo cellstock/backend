@@ -9,6 +9,8 @@ use App\Models\MarketplaceOffer;
 use App\Models\RefurbedCatalogItem;
 use App\Models\User;
 use App\Services\Marketplaces\Connectors\BackMarketConnector;
+use App\Services\Marketplaces\Connectors\LightspeedConnector;
+use App\Services\Marketplaces\Connectors\MockLightspeedConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use App\Services\Marketplaces\MarketplaceOperationService;
@@ -24,6 +26,7 @@ class InventoryService
 
     public function list(User $user, array $filters): array
     {
+        $availableMarketplaces = $this->inventoryMarketplaceOptions($user);
         [$connection] = $this->inventoryConnection(
             $user,
             isset($filters['marketplace']) ? (string) $filters['marketplace'] : null
@@ -136,6 +139,7 @@ class InventoryService
                 'logo' => $connection->marketplace->logo,
                 'account_name' => $connection->account_name,
             ],
+            'available_marketplaces' => $availableMarketplaces,
             'markets' => $markets,
             'selected_market' => $marketCode ?: null,
             'pagination' => [
@@ -237,21 +241,63 @@ class InventoryService
 
     public function bulk(User $user, array $data): array
     {
-        [$connection] = $this->refurbed($user);
+        $marketplaceSlug = isset($data['marketplace']) ? (string) $data['marketplace'] : null;
+        $offerIds = array_values(array_unique($data['offer_ids']));
         $offers = MarketplaceOffer::query()
-            ->where('marketplace_connection_id', $connection->id)
-            ->whereIn('external_offer_id', $data['offer_ids'])
+            ->whereIn('external_offer_id', $offerIds)
+            ->whereHas('connection', function ($query) use ($user, $marketplaceSlug): void {
+                $query
+                    ->whereBelongsTo($user)
+                    ->where('status', MarketplaceConnectionStatus::Connected->value)
+                    ->whereHas('marketplace', function ($marketplaceQuery) use ($marketplaceSlug): void {
+                        if ($marketplaceSlug) {
+                            MarketplaceSlug::constrainQuery($marketplaceQuery, $marketplaceSlug);
+                        } else {
+                            MarketplaceSlug::constrainInventoryQuery($marketplaceQuery);
+                        }
+                    });
+            })
+            ->with('connection.marketplace')
             ->get();
 
-        if ($offers->count() !== count(array_unique($data['offer_ids']))) {
+        if ($offers->count() !== count($offerIds)) {
             throw new BusinessRuleException('One or more selected offers were not found.', 404);
         }
 
         $action = $data['action'];
         if (in_array($action, ['inactive', 'out_of_stock'], true)) {
-            foreach ($offers as $offer) {
-                $offer->update(['stock' => 0, 'is_active' => $action !== 'inactive', 'pending_upload' => true]);
-                $this->operations->queue($user, $connection->id, 'offer.update', 'offer', $offer->external_offer_id, ['stock' => 0]);
+            foreach ($offers->groupBy('marketplace_connection_id') as $connectionId => $group) {
+                $connection = $group->first()?->connection;
+                if (! $connection) {
+                    continue;
+                }
+                $connector = $this->connectors->connector($connection->marketplace);
+                foreach ($group as $offer) {
+                    $offer->update([
+                        'stock' => 0,
+                        'is_active' => $action !== 'inactive',
+                        'pending_upload' => true,
+                    ]);
+                    if (
+                        $connector instanceof LightspeedConnector
+                        || $connector instanceof MockLightspeedConnector
+                    ) {
+                        $connector->updateVariantStocks($connection, [[
+                            'variant_id' => (string) $offer->external_offer_id,
+                            'stock' => 0,
+                        ]]);
+                        $offer->forceFill(['pending_upload' => false])->save();
+                    } else {
+                        $this->operations->queue(
+                            $user,
+                            (int) $connectionId,
+                            'offer.update',
+                            'offer',
+                            $offer->external_offer_id,
+                            ['stock' => 0]
+                        );
+                    }
+                }
             }
 
             return ['updated' => $offers->count(), 'failed' => 0];
@@ -278,19 +324,22 @@ class InventoryService
 
     public function findInstance(User $user, string $identifier, string $identifierType): array
     {
-        [$connection, $connector] = $this->refurbed($user);
         $identifier = trim($identifier);
 
         if ($identifierType === 'ean_or_sku') {
-            $offer = MarketplaceOffer::where('marketplace_connection_id', $connection->id)->where('sku', $identifier)->first();
-            if ($offer) {
-                if (! $offer->instance_id) throw new BusinessRuleException('This SKU has no linked Refurbed product yet. Search by EAN instead.', 422);
-                return [
-                    'id' => (string) $offer->instance_id,
-                    'name' => $offer->instance_name ?: $offer->sku,
-                    'gtin' => $offer->ean,
-                    'sku' => $offer->sku,
-                ];
+            // Search synced offers on Refurbed, Back Market, and Lightspeed first.
+            $fromOffers = $this->findOfferInstanceAcrossMarketplaces($user, $identifier);
+            if ($fromOffers !== null) {
+                return $fromOffers;
+            }
+
+            try {
+                [$connection, $connector] = $this->refurbed($user);
+            } catch (BusinessRuleException) {
+                throw new BusinessRuleException(
+                    'No matching product was found for that EAN, ASIN, or SKU in your connected marketplaces.',
+                    404
+                );
             }
 
             $catalogItem = RefurbedCatalogItem::query()
@@ -330,6 +379,7 @@ class InventoryService
                             'category' => $local?->main_category,
                             'gtin' => $remote['gtin'] ?? null,
                             'sku' => $local?->sku,
+                            'marketplace' => 'refurbed',
                         ];
                     }
                 } catch (\Throwable) {
@@ -338,13 +388,19 @@ class InventoryService
             }
 
             if (preg_match('/^\d{8,14}$/', $identifier) === 1) {
-                return $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin'));
+                return array_merge(
+                    $this->normalizeInstance($connector->getInstance($connection, $identifier, 'gtin')),
+                    ['marketplace' => 'refurbed']
+                );
             }
 
             // Non-digit values: try ASIN/MPN after SKU / catalog lookup.
             try {
-                return $this->normalizeInstance(
-                    $connector->getInstance($connection, $identifier, 'mpn')
+                return array_merge(
+                    $this->normalizeInstance(
+                        $connector->getInstance($connection, $identifier, 'mpn')
+                    ),
+                    ['marketplace' => 'refurbed']
                 );
             } catch (\Throwable) {
                 throw new BusinessRuleException(
@@ -354,8 +410,13 @@ class InventoryService
             }
         }
 
+        [$connection, $connector] = $this->refurbed($user);
+
         if (in_array($identifierType, ['gtin', 'mpn'], true)) {
-            return $this->normalizeInstance($connector->getInstance($connection, $identifier, $identifierType));
+            return array_merge(
+                $this->normalizeInstance($connector->getInstance($connection, $identifier, $identifierType)),
+                ['marketplace' => 'refurbed']
+            );
         }
 
         if ($identifierType === 'id') {
@@ -374,6 +435,7 @@ class InventoryService
                 'category' => $local?->main_category,
                 'gtin' => $remote['gtin'] ?? null,
                 'sku' => $local?->sku,
+                'marketplace' => 'refurbed',
             ];
         }
 
@@ -393,6 +455,63 @@ class InventoryService
             'attributes' => $item->attributes,
             'attributes_de' => $item->attributes_de,
             'category' => $item->main_category,
+            'marketplace' => 'refurbed',
+        ];
+    }
+
+    /**
+     * Resolve a product from already-synced marketplace offers (Refurbed, Back Market, Lightspeed).
+     *
+     * @return array{id: string, name: string, gtin: ?string, sku: ?string, marketplace: ?string, marketplace_name: ?string}|null
+     */
+    private function findOfferInstanceAcrossMarketplaces(User $user, string $identifier): ?array
+    {
+        $connectionIds = MarketplaceConnection::query()
+            ->whereBelongsTo($user)
+            ->where('status', MarketplaceConnectionStatus::Connected->value)
+            ->whereHas('marketplace', fn ($query) => MarketplaceSlug::constrainInventoryQuery($query))
+            ->pluck('id');
+
+        if ($connectionIds->isEmpty()) {
+            return null;
+        }
+
+        $offerQuery = fn () => MarketplaceOffer::query()
+            ->whereIn('marketplace_connection_id', $connectionIds)
+            ->with('connection.marketplace');
+
+        $offer = $offerQuery()->where('sku', $identifier)->orderByDesc('id')->first()
+            ?? $offerQuery()->where('ean', $identifier)->orderByDesc('id')->first()
+            ?? $offerQuery()->whereRaw('LOWER(sku) = ?', [mb_strtolower($identifier)])->orderByDesc('id')->first()
+            ?? $offerQuery()->where('external_offer_id', $identifier)->orderByDesc('id')->first();
+
+        if (! $offer) {
+            return null;
+        }
+
+        $slug = $offer->connection?->marketplace?->slug;
+        if (
+            MarketplaceSlug::isRefurbed($slug)
+            && ($offer->instance_id === null || trim((string) $offer->instance_id) === '')
+        ) {
+            throw new BusinessRuleException(
+                'This SKU has no linked Refurbed product yet. Search by EAN instead.',
+                422
+            );
+        }
+
+        $id = trim((string) ($offer->instance_id ?: $offer->external_offer_id));
+        if ($id === '') {
+            return null;
+        }
+
+        return [
+            'id' => $id,
+            'name' => (string) ($offer->instance_name ?: $offer->sku ?: $id),
+            'gtin' => $offer->ean,
+            'sku' => $offer->sku,
+            'marketplace' => $slug,
+            'marketplace_name' => $offer->connection?->marketplace?->name,
         ];
     }
 
@@ -612,13 +731,17 @@ class InventoryService
         return $prices;
     }
 
-    public function getOffer(User $user, string $offerId): array
+    public function getOffer(User $user, string $offerId, ?string $marketplaceSlug = null): array
     {
-        [$connection] = $this->refurbed($user);
-        $offer = MarketplaceOffer::query()
-            ->where('marketplace_connection_id', $connection->id)
-            ->where('external_offer_id', $offerId)
-            ->firstOrFail();
+        $offer = $this->findInventoryOffer($user, $offerId, $marketplaceSlug);
+        $connection = $offer->connection;
+        $listingDetails = $offer->listing_details ?? [];
+        if ($listingDetails === [] && MarketplaceSlug::isLightspeed($connection->marketplace?->slug)) {
+            $listingDetails = [
+                'title' => (string) ($offer->instance_name ?? ''),
+                'ean' => (string) ($offer->ean ?? ''),
+            ];
+        }
 
         return [
             'id' => $offer->external_offer_id,
@@ -638,10 +761,10 @@ class InventoryService
             'ean' => $offer->ean,
             'tags' => $offer->tags ?? [],
             'buy_box' => (bool) ($this->payloadValue($offer, ['has_buy_box', 'buy_box', 'market_data.has_buy_box', 'market_data.buy_box']) ?? false),
-            'listing_details' => $offer->listing_details ?? [],
+            'listing_details' => $listingDetails,
             'market_prices' => array_values(array_replace(
                 collect(array_merge($offer->raw_payload['calculated_market_prices'] ?? [], $offer->raw_payload['set_market_prices'] ?? []))->keyBy('market_code')->all(),
-                collect(json_decode($offer->listing_details['marketplace_prices'] ?? '[]', true) ?: [])->keyBy('market_code')->all()
+                collect(json_decode($listingDetails['marketplace_prices'] ?? '[]', true) ?: [])->keyBy('market_code')->all()
             )),
             'market_codes' => $offer->market_codes ?? [],
             'markets' => $this->offerMarkets($connection),
@@ -656,11 +779,19 @@ class InventoryService
 
     public function update(User $user, string $offerId, array $data): array
     {
-        [$connection, $connector] = $this->refurbed($user);
-        $stored = MarketplaceOffer::query()
-            ->where('marketplace_connection_id', $connection->id)
-            ->where('external_offer_id', $offerId)
-            ->firstOrFail();
+        $marketplaceSlug = isset($data['marketplace']) ? (string) $data['marketplace'] : null;
+        unset($data['marketplace']);
+        $stored = $this->findInventoryOffer($user, $offerId, $marketplaceSlug);
+        $connection = $stored->connection;
+        $connector = $this->connectors->connector($connection->marketplace);
+
+        if (
+            $connector instanceof LightspeedConnector
+            || $connector instanceof MockLightspeedConnector
+        ) {
+            return $this->updateLightspeedOffer($user, $connection, $connector, $stored, $data);
+        }
+
         $listingDetails = $data['listing_details'] ?? null;
         $marketCode = strtoupper((string) ($data['market_code'] ?? ''));
         $marketPrices = $data['market_prices'] ?? null;
@@ -782,14 +913,81 @@ class InventoryService
         return $remoteOffer ?? ['id' => $stored->external_offer_id];
     }
 
-    public function delete(User $user, string $offerId): void
+    /**
+     * @param  LightspeedConnector|MockLightspeedConnector  $connector
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function updateLightspeedOffer(
+        User $user,
+        MarketplaceConnection $connection,
+        object $connector,
+        MarketplaceOffer $stored,
+        array $data,
+    ): array {
+        $listingDetails = $data['listing_details'] ?? null;
+        $updates = [];
+
+        if (array_key_exists('stock', $data)) {
+            $stock = max(0, (int) $data['stock']);
+            $connector->updateVariantStocks($connection, [[
+                'variant_id' => (string) $stored->external_offer_id,
+                'stock' => $stock,
+            ]]);
+            $updates['stock'] = $stock;
+            $updates['is_active'] = $stock > 0;
+        }
+
+        if (array_key_exists('reference_price', $data)) {
+            $updates['reference_price'] = (string) $data['reference_price'];
+        }
+
+        if ($listingDetails !== null) {
+            $updates['listing_details'] = array_replace($stored->listing_details ?? [], $listingDetails);
+            if (isset($listingDetails['title']) && trim((string) $listingDetails['title']) !== '') {
+                $updates['instance_name'] = trim((string) $listingDetails['title']);
+            }
+            if (array_key_exists('ean', $listingDetails)) {
+                $updates['ean'] = ($listingDetails['ean'] ?? '') !== '' ? (string) $listingDetails['ean'] : null;
+            }
+        }
+
+        if ($updates !== []) {
+            $updates['last_synced_at'] = now();
+            $updates['pending_upload'] = false;
+            $stored->forceFill($updates)->save();
+        }
+
+        // Do not share stock by SKU for Lightspeed: Gebruikt / Goed / Als nieuw
+        // variants commonly reuse the same SKU and must stay independent.
+
+        return $this->getOffer($user, (string) $stored->external_offer_id, $connection->marketplace?->slug);
+    }
+
+    public function delete(User $user, string $offerId, ?string $marketplaceSlug = null): void
     {
-        [$connection, $connector] = $this->refurbed($user);
-        $connector->deleteOffer($connection, $offerId);
-        MarketplaceOffer::query()
-            ->where('marketplace_connection_id', $connection->id)
-            ->where('external_offer_id', $offerId)
-            ->delete();
+        $stored = $this->findInventoryOffer($user, $offerId, $marketplaceSlug);
+        $connection = $stored->connection;
+        $connector = $this->connectors->connector($connection->marketplace);
+
+        if (
+            $connector instanceof LightspeedConnector
+            || $connector instanceof MockLightspeedConnector
+        ) {
+            $connector->updateVariantStocks($connection, [[
+                'variant_id' => (string) $stored->external_offer_id,
+                'stock' => 0,
+            ]]);
+            $stored->delete();
+
+            return;
+        }
+
+        if ($connector instanceof RefurbedConnector) {
+            $connector->deleteOffer($connection, $offerId);
+        }
+
+        $stored->delete();
     }
 
     public function importStocks(User $user, UploadedFile $file, string $marketCode): array
@@ -903,14 +1101,19 @@ class InventoryService
     {
         [$connection, $connector] = $this->inventoryConnection($user, $marketplaceSlug);
 
-        if ($connector instanceof BackMarketConnector) {
+        if (
+            $connector instanceof BackMarketConnector
+            || $connector instanceof LightspeedConnector
+            || $connector instanceof MockLightspeedConnector
+        ) {
             $result = $connector->sync($connection, 'inventory');
             $connection->forceFill(['last_synced_at' => now(), 'last_error' => null])->save();
 
             return [
                 'synchronized' => (int) ($result['success_count'] ?? 0),
                 'complete' => true,
-                'marketplace' => $connection->marketplace?->slug ?? 'back-market-eu',
+                'marketplace' => $connection->marketplace?->slug
+                    ?? (MarketplaceSlug::isLightspeed($connection->marketplace?->slug) ? 'lightspeed' : 'back-market-eu'),
             ];
         }
 
@@ -953,8 +1156,70 @@ class InventoryService
         return $this->inventoryConnection($user, 'refurbed');
     }
 
+    private function findInventoryOffer(User $user, string $offerId, ?string $preferSlug = null): MarketplaceOffer
+    {
+        $offers = MarketplaceOffer::query()
+            ->where('external_offer_id', $offerId)
+            ->whereHas('connection', function ($query) use ($user, $preferSlug): void {
+                $query
+                    ->whereBelongsTo($user)
+                    ->where('status', MarketplaceConnectionStatus::Connected->value)
+                    ->whereHas('marketplace', function ($marketplaceQuery) use ($preferSlug): void {
+                        if ($preferSlug) {
+                            MarketplaceSlug::constrainQuery($marketplaceQuery, $preferSlug);
+                        } else {
+                            MarketplaceSlug::constrainInventoryQuery($marketplaceQuery);
+                        }
+                    });
+            })
+            ->with('connection.marketplace')
+            ->get();
+
+        if ($preferSlug) {
+            $match = $offers->first(
+                fn (MarketplaceOffer $offer): bool => MarketplaceSlug::sameFamily(
+                    $offer->connection?->marketplace?->slug,
+                    $preferSlug
+                )
+            );
+            if ($match) {
+                return $match;
+            }
+        }
+
+        $offer = $offers->first();
+        if (! $offer) {
+            throw (new \Illuminate\Database\Eloquent\ModelNotFoundException)
+                ->setModel(MarketplaceOffer::class, [$offerId]);
+        }
+
+        return $offer;
+    }
+
     /**
-     * @return array{0: MarketplaceConnection, 1: RefurbedConnector|BackMarketConnector}
+     * @return list<array{slug: string, name: string, logo: ?string, account_name: ?string, markets: list<array{code: string, name: string, currency_code: ?string}>}>
+     */
+    private function inventoryMarketplaceOptions(User $user): array
+    {
+        return MarketplaceConnection::query()
+            ->whereBelongsTo($user)
+            ->where('status', MarketplaceConnectionStatus::Connected->value)
+            ->whereHas('marketplace', fn ($query) => MarketplaceSlug::constrainInventoryQuery($query))
+            ->with('marketplace')
+            ->get()
+            ->map(fn (MarketplaceConnection $connection): array => [
+                'slug' => (string) $connection->marketplace->slug,
+                'name' => (string) $connection->marketplace->name,
+                'logo' => $connection->marketplace->logo,
+                'account_name' => $connection->account_name,
+                'markets' => $this->offerMarkets($connection),
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array{0: MarketplaceConnection, 1: RefurbedConnector|BackMarketConnector|LightspeedConnector}
      */
     private function inventoryConnection(User $user, ?string $preferSlug = null): array
     {
@@ -975,18 +1240,28 @@ class InventoryService
             );
         }
 
-        $connection ??= $connections->first(
-            fn (MarketplaceConnection $item) => MarketplaceSlug::isRefurbed($item->marketplace?->slug)
-        ) ?? $connections->first();
+        // No explicit marketplace: prefer the connection that already has stored offers
+        // (so Lightspeed inventory is visible after sync instead of an empty/auth-broken Refurbed view).
+        if (! $connection) {
+            $connection = $connections
+                ->sortByDesc(function (MarketplaceConnection $item): int {
+                    return MarketplaceOffer::query()
+                        ->where('marketplace_connection_id', $item->id)
+                        ->count();
+                })
+                ->first();
+        }
 
         if (! $connection) {
-            throw new BusinessRuleException('Connect Refurbed or Back Market before managing inventory.', 422);
+            throw new BusinessRuleException('Connect Refurbed, Back Market, or Lightspeed before managing inventory.', 422);
         }
 
         $connector = $this->connectors->connector($connection->marketplace);
         if (
             ! $connector instanceof RefurbedConnector
             && ! $connector instanceof BackMarketConnector
+            && ! $connector instanceof LightspeedConnector
+            && ! $connector instanceof MockLightspeedConnector
         ) {
             throw new BusinessRuleException('Inventory requires a real marketplace connection.', 422);
         }
@@ -1070,6 +1345,14 @@ class InventoryService
                 'code' => $code,
                 'name' => 'Back Market '.$code,
                 'currency_code' => $currency,
+            ]];
+        }
+
+        if ($markets === [] && MarketplaceSlug::isLightspeed($connection->marketplace?->slug)) {
+            return [[
+                'code' => 'NL',
+                'name' => 'Telefoongigant NL',
+                'currency_code' => 'EUR',
             ]];
         }
 
