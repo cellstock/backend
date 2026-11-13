@@ -12,7 +12,7 @@ class MarketplaceShippingProfile extends Model
 
     protected function casts(): array
     {
-        return ['is_current' => 'boolean', 'is_deletable' => 'boolean', 'num_offers_assigned' => 'integer', 'raw_payload' => 'encrypted:array', 'marketplace_created_at' => 'datetime', 'last_synced_at' => 'datetime'];
+        return ['is_current' => 'boolean', 'is_deletable' => 'boolean', 'num_offers_assigned' => 'integer', 'raw_payload' => 'array', 'marketplace_created_at' => 'datetime', 'last_synced_at' => 'datetime'];
     }
 
     public function connection(): BelongsTo

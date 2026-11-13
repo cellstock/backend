@@ -38,7 +38,7 @@ class MarketplaceOrderItem extends Model
             'shipping_override_amount' => 'decimal:2',
             'commission_amount' => 'decimal:2',
             'tax_amount' => 'decimal:2',
-            'raw_payload' => 'encrypted:array',
+            'raw_payload' => 'array',
         ];
     }
 

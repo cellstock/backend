@@ -48,9 +48,9 @@ class MarketplaceOrder extends Model
             'tax_amount' => 'decimal:2',
             'total_amount' => 'decimal:2',
 
-            'shipping_address' => 'encrypted:array',
-            'billing_address' => 'encrypted:array',
-            'raw_payload' => 'encrypted:array',
+            'shipping_address' => 'array',
+            'billing_address' => 'array',
+            'raw_payload' => 'array',
 
             'ordered_at' => 'datetime',
             'modified_at' => 'datetime',

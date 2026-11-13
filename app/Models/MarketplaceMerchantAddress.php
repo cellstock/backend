@@ -34,7 +34,7 @@ class MarketplaceMerchantAddress extends Model
     protected function casts(): array
     {
         return [
-            'raw_payload' => 'encrypted:array',
+            'raw_payload' => 'array',
             'last_synced_at' => 'datetime',
         ];
     }

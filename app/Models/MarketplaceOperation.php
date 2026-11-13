@@ -16,8 +16,8 @@ class MarketplaceOperation extends Model
     protected function casts(): array
     {
         return [
-            'payload' => 'encrypted:array',
-            'result' => 'encrypted:array',
+            'payload' => 'array',
+            'result' => 'array',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
         ];

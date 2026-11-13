@@ -24,8 +24,8 @@ class MarketplaceShippingLabel extends Model
     {
         return [
             'normal_printer_urls' => 'array',
-            'merchant_address' => 'encrypted:array',
-            'raw_payload' => 'encrypted:array',
+            'merchant_address' => 'array',
+            'raw_payload' => 'array',
             'parcel_weight' => 'decimal:2',
         ];
     }

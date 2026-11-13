@@ -12,8 +12,8 @@ class MarketplaceOrderReturn extends Model
     protected function casts(): array
     {
         return [
-            'item_identifiers' => 'encrypted:array',
-            'raw_payload' => 'encrypted:array',
+            'item_identifiers' => 'array',
+            'raw_payload' => 'array',
             'item_within_trial_period' => 'boolean',
             'return_initiated_at' => 'datetime',
             'delivered_at' => 'datetime',

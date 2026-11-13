@@ -35,7 +35,6 @@ return new class extends Migration
             $table->text('tracking_url')->nullable();
             $table->string('shipper')->nullable();
 
-            // These will be encrypted by the model.
             $table->longText('shipping_address')->nullable();
             $table->longText('billing_address')->nullable();
             $table->longText('raw_payload')->nullable();

@@ -22,7 +22,7 @@ class MarketplaceOffer extends Model
             'reference_price' => 'decimal:2',
             'reference_min_price' => 'decimal:2',
             'market_codes' => 'array',
-            'raw_payload' => 'encrypted:array',
+            'raw_payload' => 'array',
             'tags' => 'array',
             'pending_upload' => 'boolean',
             'is_active' => 'boolean',

@@ -4,6 +4,7 @@ namespace App\Services\Marketplaces\Connectors;
 
 use App\Contracts\Marketplaces\MarketplaceConnector;
 use App\Exceptions\RefurbedApiException;
+use App\Support\Imei;
 use App\Models\Marketplace;
 use App\Models\MarketplaceConnection;
 use App\Models\MarketplaceOrder;
@@ -481,43 +482,68 @@ class RefurbedConnector implements MarketplaceConnector
             return $order;
         }
 
-        $identifiersByItem = collect($itemIdentifiers)->keyBy(
-            fn ($entry) => (string) ($entry['id'] ?? '')
-        );
+        $identifiersByItem = collect($itemIdentifiers)
+            ->filter(fn (array $entry): bool => trim((string) ($entry['value'] ?? '')) !== '')
+            ->groupBy(fn (array $entry): string => (string) ($entry['id'] ?? ''));
+
+        $trackingUrl = trim((string) ($order->tracking_url ?? ''));
 
         $updates = $order->items
-            ->map(function ($item) use ($identifiersByItem): ?array {
-                $identifier = $identifiersByItem->get((string) $item->external_order_item_id);
-                if (! is_array($identifier) || trim((string) ($identifier['value'] ?? '')) === '') {
+            ->map(function ($item) use ($identifiersByItem, $trackingUrl): ?array {
+                $entries = $identifiersByItem->get((string) $item->external_order_item_id);
+                if ($entries === null || $entries->isEmpty()) {
+                    return null;
+                }
+
+                $itemIdentifiers = $entries
+                    ->map(fn (array $identifier): array => $this->mapRefurbedItemIdentifier($identifier))
+                    ->filter(fn (array $identifier): bool => $identifier['value'] !== '')
+                    ->values()
+                    ->all();
+
+                if ($itemIdentifiers === []) {
                     return null;
                 }
 
                 $state = strtoupper((string) $item->status);
-                // Refurbed rejects ACCEPTED→ACCEPTED (and similar) even when only IMEI changes.
-                // Identifiers are accepted on a real transition (e.g. ACCEPTED→SHIPPED).
-                if (! in_array($state, ['SHIPPED', 'RETURNED'], true)) {
-                    return null;
+
+                if ($state === 'ACCEPTED' && $trackingUrl !== '') {
+                    return [
+                        'id' => (string) $item->external_order_item_id,
+                        'state' => 'SHIPPED',
+                        'parcel_tracking_url' => $trackingUrl,
+                        'item_identifiers' => $itemIdentifiers,
+                    ];
                 }
 
-                return [
-                    'id' => (string) $item->external_order_item_id,
-                    'state' => $state,
-                    'item_identifiers' => [[
-                        'identifier_type' => $identifier['identifier_type'],
-                        'value' => trim((string) $identifier['value']),
-                    ]],
-                ];
+                if (in_array($state, ['SHIPPED', 'RETURNED'], true)) {
+                    return [
+                        'id' => (string) $item->external_order_item_id,
+                        'state' => $state,
+                        'item_identifiers' => $itemIdentifiers,
+                    ];
+                }
+
+                return null;
             })
             ->filter()
             ->values()
             ->all();
 
         if ($updates === []) {
-            // Local save already done by the caller; nothing safe to push without a status change.
             return $order;
         }
 
-        return $this->batchUpdateOrderItemsState($order, $updates, trackingUrl: null, status: null);
+        $shipped = collect($updates)->contains(
+            fn (array $update): bool => strtoupper((string) ($update['state'] ?? '')) === 'SHIPPED'
+        );
+
+        return $this->batchUpdateOrderItemsState(
+            $order,
+            $updates,
+            $shipped ? $trackingUrl : null,
+            $shipped ? 'SHIPPED' : null,
+        );
     }
 
     public function updateOrderStatus(
@@ -550,7 +576,10 @@ class RefurbedConnector implements MarketplaceConnector
             }
         }
 
-        $identifiersByItem = collect($itemIdentifiers)->keyBy(fn ($entry) => (string) ($entry['id'] ?? ''));
+        $identifiersByItem = collect($itemIdentifiers)
+            ->filter(fn (array $entry): bool => trim((string) ($entry['value'] ?? '')) !== '')
+            ->groupBy(fn (array $entry): string => (string) ($entry['id'] ?? ''));
+
         $updates = $order->items->map(function ($item) use ($status, $trackingUrl, $identifiersByItem): array {
             $update = [
                 'id' => (string) $item->external_order_item_id,
@@ -561,18 +590,40 @@ class RefurbedConnector implements MarketplaceConnector
                 $update['parcel_tracking_url'] = $trackingUrl;
             }
 
-            $identifier = $identifiersByItem->get((string) $item->external_order_item_id);
-            if (is_array($identifier) && ! empty($identifier['value'])) {
-                $update['item_identifiers'] = [[
-                    'identifier_type' => $identifier['identifier_type'],
-                    'value' => $identifier['value'],
-                ]];
+            if (in_array($status, ['SHIPPED', 'RETURNED'], true)) {
+                $entries = $identifiersByItem->get((string) $item->external_order_item_id);
+                if ($entries !== null && $entries->isNotEmpty()) {
+                    $update['item_identifiers'] = $entries
+                        ->map(fn (array $identifier): array => $this->mapRefurbedItemIdentifier($identifier))
+                        ->filter(fn (array $identifier): bool => $identifier['value'] !== '')
+                        ->values()
+                        ->all();
+                }
             }
 
             return $update;
         })->all();
 
         return $this->batchUpdateOrderItemsState($order, $updates, $trackingUrl, $status);
+    }
+
+    /**
+     * @param  array<string, mixed>  $identifier
+     * @return array{identifier_type: string, value: string}
+     */
+    private function mapRefurbedItemIdentifier(array $identifier): array
+    {
+        $type = strtoupper((string) ($identifier['identifier_type'] ?? 'IMEI'));
+        $value = trim((string) ($identifier['value'] ?? ''));
+
+        if ($type === 'IMEI' && $value !== '') {
+            $value = Imei::formatForRefurbed($value);
+        }
+
+        return [
+            'identifier_type' => (string) ($identifier['identifier_type'] ?? 'IMEI'),
+            'value' => $value,
+        ];
     }
 
     /**

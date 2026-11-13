@@ -15,6 +15,7 @@ use App\Services\Marketplaces\Connectors\BackMarketConnector;
 use App\Services\Marketplaces\Connectors\RefurbedConnector;
 use App\Services\Marketplaces\MarketplaceConnectorManager;
 use App\Services\Marketplaces\Sync\BackMarketOrderSynchronizer;
+use App\Support\Imei;
 use App\Support\MarketplaceSlug;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -156,22 +157,29 @@ class OrderService
         array $identifiers,
         bool $syncRemote = true,
     ): MarketplaceOrder {
+        $identifiers = $this->formatItemIdentifiersForRefurbed($identifiers);
         $order = $this->findForUser($user, $orderId);
-        $byItem = collect($identifiers)->keyBy(fn (array $entry) => (string) $entry['id']);
+        $byItem = collect($identifiers)
+            ->filter(fn (array $entry): bool => trim((string) ($entry['value'] ?? '')) !== '')
+            ->groupBy(fn (array $entry): string => (string) ($entry['id'] ?? ''));
 
         foreach ($order->items as $item) {
-            $entry = $byItem->get((string) $item->external_order_item_id);
+            $entries = $byItem->get((string) $item->external_order_item_id);
             try {
                 $payload = is_array($item->raw_payload) ? $item->raw_payload : [];
             } catch (Throwable) {
                 $payload = [];
             }
 
-            if (is_array($entry) && trim((string) ($entry['value'] ?? '')) !== '') {
-                $payload['item_identifiers'] = [[
-                    'identifier_type' => $entry['identifier_type'],
-                    'value' => trim((string) $entry['value']),
-                ]];
+            if ($entries !== null && $entries->isNotEmpty()) {
+                $payload['item_identifiers'] = $entries
+                    ->map(fn (array $entry): array => [
+                        'identifier_type' => (string) ($entry['identifier_type'] ?? 'IMEI'),
+                        'value' => trim((string) ($entry['value'] ?? '')),
+                    ])
+                    ->filter(fn (array $entry): bool => $entry['value'] !== '')
+                    ->values()
+                    ->all();
             } else {
                 unset($payload['item_identifiers']);
             }
@@ -216,6 +224,24 @@ class OrderService
         array $itemIdentifiers = [],
     ): MarketplaceOrder {
         $order = $this->findForUser($user, $orderId);
+        $status = strtoupper($status);
+
+        // Refurbed only accepts item_identifiers on SHIPPED / RETURNED (not on ACCEPTED).
+        if (! in_array($status, ['SHIPPED', 'RETURNED'], true)) {
+            $itemIdentifiers = [];
+        }
+
+        if ($itemIdentifiers !== []) {
+            $itemIdentifiers = $this->formatItemIdentifiersForRefurbed($itemIdentifiers);
+
+            $order = $this->saveItemIdentifiers(
+                $user,
+                $orderId,
+                $itemIdentifiers,
+                syncRemote: false,
+            );
+        }
+
         $slug = $order->connection->marketplace->slug;
         $connector = $this->connectorManager->connector($order->connection->marketplace);
         $previousStatus = strtoupper((string) $order->status);
@@ -710,16 +736,121 @@ class OrderService
             'reimbursement' => ['Order reimbursement', "A reimbursement update is available for order {$order->external_order_id}."],
             'payment_reminder' => ['Payment reminder', "Payment is still required for order {$order->external_order_id}."],
             'evaluation_reminder' => ['Order evaluation', "Please share your feedback for order {$order->external_order_id}."],
-            'shipment_confirmation' => ['Shipment confirmation', "Order {$order->external_order_id} has been dispatched. Tracking: ".($order->tracking_url ?: 'not available')],
+            'shipment_confirmation' => ['Shipment confirmation', null],
         ];
         [$subject, $body] = $messages[$template];
 
+        $invoicePdf = $template === 'shipment_confirmation'
+            ? $this->invoicePdfBytesForShipmentEmail($order)
+            : null;
+        $invoiceFilename = 'invoice-'.$order->external_order_id.'.pdf';
+
         try {
-            Mail::raw($body, fn ($message) => $message->to($email)->subject($subject));
+            if ($template === 'shipment_confirmation') {
+                $trackingUrl = is_string($order->tracking_url) && filter_var($order->tracking_url, FILTER_VALIDATE_URL)
+                    ? $order->tracking_url
+                    : null;
+                $mailData = [
+                    'appName' => (string) config('app.name', 'CelleXa'),
+                    'orderNumber' => (string) $order->external_order_id,
+                    'trackingUrl' => $trackingUrl,
+                    'trackingNumber' => $order->tracking_number ? (string) $order->tracking_number : null,
+                    'carrier' => $order->shipper ? (string) $order->shipper : null,
+                    'hasInvoiceAttachment' => $invoicePdf !== null,
+                ];
+
+                Mail::send(
+                    ['emails.shipment-confirmation', 'emails.shipment-confirmation-text'],
+                    $mailData,
+                    function ($message) use ($email, $subject, $invoicePdf, $invoiceFilename) {
+                        $message->to($email)->subject($subject);
+
+                        if ($invoicePdf !== null) {
+                            $message->attachData($invoicePdf, $invoiceFilename, [
+                                'mime' => 'application/pdf',
+                            ]);
+                        }
+                    },
+                );
+            } else {
+                Mail::raw((string) $body, function ($message) use ($email, $subject) {
+                    $message->to($email)->subject($subject);
+                });
+            }
         } catch (Throwable $exception) {
             report($exception);
             throw new BusinessRuleException('The email could not be sent. Check the Laravel mail configuration and try again.', 503);
         }
+    }
+
+    private function invoicePdfBytesForShipmentEmail(MarketplaceOrder $order): ?string
+    {
+        $order->refresh();
+
+        foreach ($this->invoiceStoragePaths($order) as $path) {
+            if (! Storage::disk('local')->exists($path)) {
+                continue;
+            }
+
+            $bytes = Storage::disk('local')->get($path);
+            if (is_string($bytes) && str_starts_with($bytes, '%PDF')) {
+                return $bytes;
+            }
+        }
+
+        $remoteUrl = is_string($order->invoice_url) ? trim($order->invoice_url) : '';
+        if ($remoteUrl !== '' && filter_var($remoteUrl, FILTER_VALIDATE_URL)) {
+            try {
+                $response = Http::timeout(20)->get($remoteUrl);
+                if ($response->successful()) {
+                    $bytes = $response->body();
+                    if ($bytes !== '' && str_starts_with($bytes, '%PDF')) {
+                        return $bytes;
+                    }
+                }
+            } catch (Throwable $exception) {
+                report($exception);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function invoiceStoragePaths(MarketplaceOrder $order): array
+    {
+        $paths = [];
+        if (is_string($order->custom_invoice_path) && $order->custom_invoice_path !== '') {
+            $paths[] = $order->custom_invoice_path;
+        }
+
+        $paths[] = "order-invoices/{$order->id}.pdf";
+
+        return array_values(array_unique($paths));
+    }
+
+    /**
+     * @param  list<array{id: string, identifier_type: string, value: string}>  $identifiers
+     * @return list<array{id: string, identifier_type: string, value: string}>
+     */
+    private function formatItemIdentifiersForRefurbed(array $identifiers): array
+    {
+        return array_map(function (array $entry): array {
+            $type = strtoupper((string) ($entry['identifier_type'] ?? 'IMEI'));
+            $value = trim((string) ($entry['value'] ?? ''));
+
+            if ($type === 'IMEI' && $value !== '') {
+                $value = Imei::formatForRefurbed($value);
+            }
+
+            return [
+                'id' => (string) ($entry['id'] ?? ''),
+                'identifier_type' => (string) ($entry['identifier_type'] ?? 'IMEI'),
+                'value' => $value,
+            ];
+        }, $identifiers);
     }
 
     private function refurbedOrder(User $user, int $orderId): array

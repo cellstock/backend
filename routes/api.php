@@ -107,6 +107,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             Route::get('/{order}/merchant-addresses', 'merchantAddresses')->whereNumber('order')->name('merchant-addresses.index');
             Route::patch('/{order}/edit-fields', 'updateEditFields')->whereNumber('order')->name('edit-fields.update');
             Route::patch('/{order}/address/{type}', 'updateAddress')->whereNumber('order')->name('address.update');
+            Route::post('/{order}/invoice/local', 'storeInvoiceLocal')->whereNumber('order')->name('invoice.store-local');
             Route::post('/{order}/invoice', 'uploadInvoice')->whereNumber('order')->name('invoice.upload');
             Route::patch('/{order}/items/{item}/shipping', 'updateItemShipping')->whereNumber(['order', 'item'])->name('items.shipping.update');
             Route::post('/{order}/email', 'sendBuyerEmail')->whereNumber('order')->name('email.send');

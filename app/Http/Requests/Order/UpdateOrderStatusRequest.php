@@ -32,4 +32,26 @@ class UpdateOrderStatusRequest extends FormRequest
             'item_identifiers.*.value' => ['required', 'string', 'max:255'],
         ];
     }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator): void {
+            $status = strtoupper((string) $this->input('status'));
+            $identifiers = $this->input('item_identifiers');
+
+            if (! is_array($identifiers) || $identifiers === []) {
+                return;
+            }
+
+            if (! in_array($status, ['SHIPPED', 'RETURNED'], true)) {
+                $validator->errors()->add(
+                    'item_identifiers',
+                    'Serial/IMEI can only be sent when marking the order as SHIPPED or RETURNED.',
+                );
+
+                return;
+            }
+
+        });
+    }
 }

@@ -70,18 +70,24 @@ class OrderController extends Controller
         UpdateOrderStatusRequest $request,
         int $order
     ): JsonResponse {
-        $marketplaceOrder = $this->orderService->findForUser($request->user(), $order);
-        $operation = $this->operations->queue($request->user(), $marketplaceOrder->marketplace_connection_id, 'order.status', 'order', $order, [
-            'status' => $request->validated('status'),
-            'tracking_url' => $request->validated('tracking_url'),
-            'item_identifiers' => $request->validated('item_identifiers', []),
-        ]);
+        $validated = $request->validated();
+        $itemIdentifiers = $validated['item_identifiers'] ?? [];
+
+        $marketplaceOrder = $this->orderService->updateStatus(
+            $request->user(),
+            $order,
+            (string) $validated['status'],
+            $validated['tracking_url'] ?? null,
+            is_array($itemIdentifiers) ? $itemIdentifiers : [],
+        );
+
+        $marketplaceOrder->loadMissing(['connection.marketplace', 'items', 'shippingLabels']);
 
         return response()->json([
             'success' => true,
-            'message' => 'Order status update queued for Refurbed.',
-            'data' => ['order' => new OrderResource($marketplaceOrder), 'operation_id' => $operation->id],
-        ], 202);
+            'message' => 'Order status updated on the marketplace.',
+            'data' => ['order' => new OrderResource($marketplaceOrder)],
+        ]);
     }
 
     public function refresh(Request $request, int $order): JsonResponse
@@ -246,10 +252,15 @@ class OrderController extends Controller
                 if ($identifiers !== []) {
                     $canPushIdentifiers = $marketplaceOrder->items->contains(
                         fn ($item): bool => in_array(strtoupper((string) $item->status), ['SHIPPED', 'RETURNED'], true)
+                    ) || (
+                        filled($marketplaceOrder->tracking_url)
+                        && $marketplaceOrder->items->contains(
+                            fn ($item): bool => strtoupper((string) $item->status) === 'ACCEPTED'
+                        )
                     );
 
                     if (! $canPushIdentifiers) {
-                        $remoteMessage = ' Serial/IMEI stored in CelleXa. Refurbed accepts identifiers when the item is shipped.';
+                        $remoteMessage = ' Serial/IMEI stored in CelleXa. Add a tracking URL or mark the order shipped on Refurbed to sync identifiers.';
                     } else {
                         try {
                             $marketplaceOrder = $this->orderService->saveItemIdentifiers(
@@ -267,7 +278,7 @@ class OrderController extends Controller
                 }
             }
 
-            // Never eager-load address columns as relations (they are encrypted JSON fields).
+            // Never eager-load address columns as relations (they are JSON fields).
             $marketplaceOrder = $marketplaceOrder->fresh([
                 'connection.marketplace',
                 'items',
@@ -334,11 +345,27 @@ class OrderController extends Controller
         ]);
     }
 
-    public function uploadInvoice(Request $request, int $order): JsonResponse
+    public function storeInvoiceLocal(Request $request, int $order): JsonResponse
     {
-        $data = $request->validate(['file' => ['required', 'file', 'mimes:pdf', 'max:2048']]);
+        $data = $request->validate(['file' => ['required', 'file', 'max:2048']]);
         $contents = file_get_contents($data['file']->getRealPath());
         abort_if($contents === false, 422, 'The uploaded PDF could not be read.');
+        abort_unless(str_starts_with($contents, '%PDF'), 422, 'Upload a valid PDF file.');
+        $saved = $this->orderService->saveInvoice($request->user(), $order, $contents);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Bill saved in CelleXa.',
+            'data' => ['order' => new OrderResource($saved)],
+        ]);
+    }
+
+    public function uploadInvoice(Request $request, int $order): JsonResponse
+    {
+        $data = $request->validate(['file' => ['required', 'file', 'max:2048']]);
+        $contents = file_get_contents($data['file']->getRealPath());
+        abort_if($contents === false, 422, 'The uploaded PDF could not be read.');
+        abort_unless(str_starts_with($contents, '%PDF'), 422, 'Upload a valid PDF file.');
         $result = $this->orderService->uploadInvoice($request->user(), $order, $contents);
 
         return response()->json(['success' => true, 'message' => 'Bill saved in CelleXa and uploaded to Refurbed.', 'data' => $result]);
