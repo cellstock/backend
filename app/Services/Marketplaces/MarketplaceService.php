@@ -87,11 +87,23 @@ class MarketplaceService
     ): array {
         $connector = $this->connectorManager->connector($marketplace);
 
-        if ($credentials === []) {
-            $credentials = $this->findUserConnection(
+        $apiKey = $credentials['api_key'] ?? null;
+        $hasApiKey = is_string($apiKey) && trim($apiKey) !== '';
+
+        if ($credentials === [] || ! $hasApiKey) {
+            $stored = $this->findUserConnection(
                 user: $user,
                 marketplace: $marketplace,
-            )->credentials;
+            )->credentials ?? [];
+
+            $credentials = array_replace(
+                $stored,
+                $credentials
+            );
+        }
+
+        if ($connector instanceof RefurbedConnector) {
+            $credentials = $connector->normalizeCredentials($credentials);
         }
 
         Validator::make(
@@ -158,6 +170,9 @@ class MarketplaceService
 
         $credentials = $data['credentials'];
         if ($connector instanceof \App\Services\Marketplaces\Connectors\BackMarketConnector) {
+            $credentials = $connector->normalizeCredentials($credentials);
+        }
+        if ($connector instanceof RefurbedConnector) {
             $credentials = $connector->normalizeCredentials($credentials);
         }
 
@@ -317,6 +332,9 @@ class MarketplaceService
                 $data['credentials'],
             );
             if ($connector instanceof \App\Services\Marketplaces\Connectors\BackMarketConnector) {
+                $credentials = $connector->normalizeCredentials($credentials);
+            }
+            if ($connector instanceof RefurbedConnector) {
                 $credentials = $connector->normalizeCredentials($credentials);
             }
 

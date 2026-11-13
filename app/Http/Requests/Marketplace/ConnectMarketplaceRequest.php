@@ -55,7 +55,7 @@ class ConnectMarketplaceRequest extends FormRequest
                 'sometimes',
                 'nullable',
                 'string',
-                'in:preproduction,production',
+                'in:preproduction,production,sandbox',
             ],
 
             'credentials.api_secret' => [

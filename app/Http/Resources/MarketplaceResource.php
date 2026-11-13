@@ -40,6 +40,9 @@ class MarketplaceResource extends JsonResource
                             $connection->status->label(),
                         'settings' =>
                             $connection->settings ?? [],
+                        'environment' => is_array($connection->credentials)
+                            ? ($connection->credentials['environment'] ?? null)
+                            : null,
                         'last_tested_at' =>
                             $connection
                                 ->last_tested_at

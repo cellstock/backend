@@ -15,7 +15,8 @@ class MarketplaceConnectionOptionsRequest extends FormRequest
     {
         return [
             'credentials' => ['sometimes', 'array'],
-            'credentials.api_key' => ['required_with:credentials', 'string', 'max:2000'],
+            'credentials.api_key' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'credentials.environment' => ['sometimes', 'nullable', 'string', 'in:sandbox,production'],
         ];
     }
 }

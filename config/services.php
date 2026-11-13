@@ -91,6 +91,11 @@ return [
             'https://api.refurbed.com'
         ),
 
+        'sandbox_url' => env(
+            'REFURBED_SANDBOX_URL',
+            'https://api-sandbox.refurbed.com'
+        ),
+
         'ca_bundle' => env(
             'REFURBED_CA_BUNDLE',
             storage_path('certs/cacert.pem')

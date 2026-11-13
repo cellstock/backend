@@ -36,7 +36,26 @@ class RefurbedConnector implements MarketplaceConnector
                 'min:20',
                 'max:2000',
             ],
+            'environment' => [
+                'sometimes',
+                'string',
+                'in:sandbox,production',
+            ],
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $credentials
+     * @return array<string, mixed>
+     */
+    public function normalizeCredentials(array $credentials): array
+    {
+        $environment = $credentials['environment'] ?? 'production';
+        if (! in_array($environment, ['sandbox', 'production'], true)) {
+            $environment = 'production';
+        }
+
+        return array_merge($credentials, ['environment' => $environment]);
     }
 
     public function testConnection(array $credentials): array
@@ -1136,7 +1155,7 @@ class RefurbedConnector implements MarketplaceConnector
         $token = $this->apiToken($credentials);
 
         $request = Http::baseUrl(
-            $this->baseUrl()
+            $this->baseUrl($credentials)
         )
             ->acceptJson()
             ->asJson()
@@ -1289,11 +1308,14 @@ class RefurbedConnector implements MarketplaceConnector
         return min(max(0, $milliseconds), $maximum);
     }
 
-    private function baseUrl(): string
+    private function baseUrl(array $credentials): string
     {
-        $url = config(
-            'services.refurbed.base_url'
-        );
+        $environment = $credentials['environment'] ?? 'production';
+        $configKey = $environment === 'sandbox'
+            ? 'services.refurbed.sandbox_url'
+            : 'services.refurbed.base_url';
+
+        $url = config($configKey);
 
         if (! is_string($url) || $url === '') {
             throw new RuntimeException(

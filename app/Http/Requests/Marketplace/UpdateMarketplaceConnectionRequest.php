@@ -29,7 +29,7 @@ class UpdateMarketplaceConnectionRequest extends FormRequest
             'credentials.access_token' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'credentials.platform' => ['sometimes', 'nullable', 'string', 'in:eu,na,ap'],
             'credentials.country_code' => ['sometimes', 'nullable', 'string', 'regex:/^[a-z]{2}-[a-z]{2}$/'],
-            'credentials.environment' => ['sometimes', 'nullable', 'string', 'in:preproduction,production'],
+            'credentials.environment' => ['sometimes', 'nullable', 'string', 'in:preproduction,production,sandbox'],
             'settings' => [
                 'sometimes',
                 'array',
